@@ -1,0 +1,7 @@
+boto3
+pandas
+pytz
+croniter
+openpyxl
+defusedxml
+cron_descriptor
