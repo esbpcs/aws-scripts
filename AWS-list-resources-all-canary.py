@@ -122,6 +122,147 @@ REGION_TZ: Dict[str, str] = {
     "af-north-1": "Africa/Cairo",
 }
 
+SERVICE_PREFIXES = {
+    "ACM": "Certificate Manager",
+    "AppFlow": "AppFlow",
+    "AppMesh": "App Mesh",
+    "AppRunner": "App Runner",
+    "AppStream": "AppStream",
+    "ApplicationDiscovery": "Application Discovery",
+    "Artifact": "Artifact",
+    "Athena": "Athena",
+    "AutoScaling": "Auto Scaling",
+    "Backup": "Backup",
+    "Batch": "Batch",
+    "Bedrock": "Bedrock",
+    "Braket": "Braket",
+    "Budgets": "Budgets",
+    "CertificateManager": "Certificate Manager",
+    "Chatbot": "Chatbot",
+    "Chime": "Chime",
+    "Cloud9": "Cloud9",
+    "CloudFront": "CloudFront",
+    "CloudFormation": "CloudFormation",
+    "CloudSearch": "CloudSearch",
+    "CloudTrail": "CloudTrail",
+    "CloudWatch": "CloudWatch",
+    "CodeArtifact": "CodeArtifact",
+    "CodeBuild": "CodeBuild",
+    "CodeCommit": "CodeCommit",
+    "CodeDeploy": "CodeDeploy",
+    "CodeGuru": "CodeGuru",
+    "CodePipeline": "CodePipeline",
+    "CodeStar": "CodeStar",
+    "CodeWhisperer": "CodeWhisperer",
+    "Comprehend": "Comprehend",
+    "Config": "Config",
+    "Console": "Console",
+    "ControlTower": "Control Tower",
+    "CostExplorer": "Cost Explorer",
+    "DataBrew": "DataBrew",
+    "DataPipeline": "Data Pipeline",
+    "DataSync": "DataSync",
+    "DatabaseMigration": "Database Migration Service",
+    "DMS": "Database Migration Service",
+    "DocumentDB": "DocumentDB",
+    "DynamoDB": "DynamoDB",
+    "EBS": "EBS",
+    "EC2": "EC2",
+    "ECR": "ECR",
+    "ECS": "ECS",
+    "EFS": "EFS",
+    "EKS": "EKS",
+    "Elemental": "Elemental",
+    "ElastiCache": "ElastiCache",
+    "ElasticBeanstalk": "Elastic Beanstalk",
+    "ElasticLoadBalancing": "Elastic Load Balancing",
+    "ElasticMapReduce": "EMR",
+    "Elasticsearch": "Elasticsearch",
+    "ELB": "Elastic Load Balancing",
+    "EMR": "EMR",
+    "EventBridge": "EventBridge",
+    "Firewall": "Firewall Manager",
+    "Forecast": "Forecast",
+    "FraudDetector": "Fraud Detector",
+    "FSx": "FSx",
+    "GameLift": "GameLift",
+    "GlobalAccelerator": "Global Accelerator",
+    "Greengrass": "Greengrass",
+    "GroundStation": "Ground Station",
+    "GuardDuty": "GuardDuty",
+    "Health": "Health Dashboard",
+    "Honeycode": "Honeycode",
+    "IAM": "IAM",
+    "IdentityCenter": "IAM Identity Center",
+    "Inspector": "Inspector",
+    "IoT": "IoT",
+    "IVS": "IVS",
+    "Kendra": "Kendra",
+    "Keyspaces": "Keyspaces",
+    "KMS": "KMS",
+    "Kinesis": "Kinesis",
+    "LakeFormation": "Lake Formation",
+    "Lex": "Lex",
+    "LightSail": "LightSail",
+    "License": "License Manager",
+    "MachineLearning": "Machine Learning",
+    "MediaConvert": "MediaConvert",
+    "MediaLive": "MediaLive",
+    "MediaPackage": "MediaPackage",
+    "MediaStore": "MediaStore",
+    "MediaTailor": "MediaTailor",
+    "MigrationHub": "Migration Hub",
+    "MQ": "MQ",
+    "MSK": "MSK",
+    "ManagedBlockchain": "Managed Blockchain",
+    "ManagedStreamingKafka": "MSK",
+    "Neptune": "Neptune",
+    "NetworkManager": "Network Manager",
+    "Organizations": "Organizations",
+    "Pinpoint": "Pinpoint",
+    "PinpointSMS": "Pinpoint SMS",
+    "Polly": "Polly",
+    "PrivateLink": "PrivateLink",
+    "PrivateNetworks": "Private Networks",
+    "QuantumLedger": "QLDB",
+    "RAM": "Resource Access Manager",
+    "RDS": "RDS",
+    "Redshift": "Redshift",
+    "Rekognition": "Rekognition",
+    "RoboMaker": "RoboMaker",
+    "S3": "S3",
+    "SES": "SES",
+    "SimpleEmail": "SES",
+    "SimpleWorkflow": "SWF",
+    "SMS": "Server Migration Service",
+    "SNS": "SNS",
+    "SQS": "SQS",
+    "SSM": "Systems Manager",
+    "SystemsManager": "Systems Manager",
+    "SecurityHub": "Security Hub",
+    "Serverless": "Serverless",
+    "ServiceCatalog": "Service Catalog",
+    "Sumerian": "Sumerian",
+    "SWF": "SWF",
+    "SnowFamily": "Snow Family",
+    "StepFunctions": "Step Functions",
+    "StorageGateway": "Storage Gateway",
+    "StorageLens": "StorageLens",
+    "STS": "Security Token Service",
+    "Timestream": "Timestream",
+    "Transcribe": "Transcribe",
+    "Transfer": "Transfer Family",
+    "Translate": "Translate",
+    "VPC": "VPC",
+    "Verified": "Verified Permissions",
+    "WAF": "WAF",
+    "WorkDocs": "WorkDocs",
+    "WorkLink": "WorkLink",
+    "WorkMail": "WorkMail",
+    "WorkSpaces": "WorkSpaces",
+    "XRay": "X-Ray",
+}
+
 # ───────────────────────────── logging ──────────────────────────────
 LOG_FMT = "%(asctime)s %(levelname)-7s [%(account)s] %(name)s:%(lineno)d — %(message)s"
 DATE_FMT = "%Y-%m-%dT%H:%M:%S%z"
@@ -139,7 +280,7 @@ class _TZFormatter(logging.Formatter):
 
     def formatTime(
         self, record: logging.LogRecord, datefmt: Optional[str] = None
-    ) -> str:  # noqa: N802
+    ) -> str:
         dt = datetime.fromtimestamp(record.created, tz=self._tz)
         return dt.strftime(datefmt or self.datefmt or "%Y-%m-%d %H:%M:%S%z")
 
@@ -147,7 +288,7 @@ class _TZFormatter(logging.Formatter):
 class _AccountFilter(logging.Filter):
     """Guarantee `.account` exists on every log record."""
 
-    def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
+    def filter(self, record: logging.LogRecord) -> bool:
         record.account = getattr(record, "account", "-")
         return True
 
@@ -172,7 +313,7 @@ def log(level: str, msg: str, *args, account: str = "-", **kwargs) -> None:
 # ───────────────────────── helper utilities ─────────────────────────
 
 
-def chunked(iterable, n: int):  # noqa: ANN001
+def chunked(iterable, n: int):
     """Yield successive *n*-sized chunks from *iterable*."""
     it = iter(iterable)
     while piece := list(islice(it, n)):
@@ -183,10 +324,10 @@ _thread_local = threading.local()
 _client_eviction_lock = threading.Lock()  # multi-thread cache eviction
 
 
-def _lru_cache_per_thread() -> OrderedDict:  # noqa: D401
+def _lru_cache_per_thread() -> OrderedDict:
     if not hasattr(_thread_local, "client_cache"):
         _thread_local.client_cache = OrderedDict()
-    return _thread_local.client_cache  # type: ignore[return-value]
+    return _thread_local.client_cache
 
 
 def aws_client(
@@ -202,7 +343,7 @@ def aws_client(
     if session is None:
         if not hasattr(_thread_local, "default_session"):
             _thread_local.default_session = boto3.Session()
-        session = _thread_local.default_session  # type: ignore[assignment]
+        session = _thread_local.default_session
 
     cache: OrderedDict = _lru_cache_per_thread()
     key = (id(session), service, region)
@@ -606,6 +747,25 @@ def storage_lens_metrics(
         return None, None
 
 
+@lru_cache(maxsize=1)
+def get_lightsail_supported_regions(session: boto3.Session, account: str) -> set[str]:
+    """
+    Return a set of region names where Lightsail is supported.
+    This is cached so it only runs once per account.
+    """
+    try:
+        ls_client = aws_client("lightsail", "us-east-1", session)
+        regions_resp = ls_client.get_regions(includeAvailabilityZones=False)
+        return {r["name"] for r in regions_resp.get("regions", [])}
+    except Exception as e:
+        log(
+            "warning",
+            f"Could not query for available Lightsail regions: {e}",
+            account=account,
+        )
+        return set()
+
+
 # --------------------------------------------------------------------------
 # VPN COLLECTOR
 # --------------------------------------------------------------------------
@@ -679,7 +839,7 @@ def _s3_select_sum_and_count(
 
 
 @lru_cache(maxsize=STORAGE_LENS_CACHE_MAX)
-def inventory_metrics(  # noqa: C901
+def inventory_metrics(
     bucket: str,
     region_hint: str,
     session: Optional[boto3.Session] = None,
@@ -1939,150 +2099,214 @@ def get_lambda_details(lambda_client: BaseClient, alias: str) -> List[Dict[str, 
 
 
 # --------------------------------------------------------------------------
-# Lightsail COLLECTOR
+# Lightsail COLLECTOR (Unified)
 # --------------------------------------------------------------------------
-def get_lightsail_details(ls_client: BaseClient, alias: str) -> List[Dict[str, Any]]:
+def get_lightsail_inventory(
+    ls_client: BaseClient,
+    alias: str,
+    session: boto3.Session,
+    is_primary_region: bool,
+    supported_regions: set[str],
+) -> List[Dict[str, Any]]:
     """
-    Return metadata for every Lightsail resource the caller can see.
+    Return a unified list of all regional and global Lightsail resources,
+    including detailed bundle specs and firewall rules for instances.
     """
     out: List[Dict[str, Any]] = []
-    region = ls_client.meta.region_name
+    current_region = ls_client.meta.region_name
 
-    # --- Instances ---
+    if supported_regions and current_region not in supported_regions:
+        return []
+
+    # log("info", f"Running Lightsail collector in supported region: {current_region}", account=alias)
+
+    # --- Pre-fetch Bundle Specifications for the region ---
+    bundle_specs = {}
+    try:
+        # Fetch Instance Bundles
+        for page in _safe_paginator(
+            ls_client.get_paginator("get_bundles").paginate, account=alias
+        ):
+            for bundle in page.get("bundles", []):
+                bundle_specs[bundle["bundleId"]] = {
+                    "vCPUs": bundle.get("cpuCount"),
+                    "MemoryInGB": bundle.get("ramSizeInGb"),
+                    "DiskSizeGB": bundle.get("diskSizeInGb"),
+                    "DataTransferGB": bundle.get("transferPerMonthInGb"),
+                }
+        # Fetch Database Bundles
+        for page in _safe_paginator(
+            ls_client.get_paginator("get_relational_database_bundles").paginate,
+            account=alias,
+        ):
+            for bundle in page.get("bundles", []):
+                bundle_specs[bundle["bundleId"]] = {
+                    "vCPUs": bundle.get("cpuCount"),
+                    "MemoryInGB": bundle.get("ramSizeInGb"),
+                    "DiskSizeGB": bundle.get("diskSizeInGb"),
+                }
+    except Exception as e:
+        log(
+            "warning",
+            f"Could not fetch all Lightsail bundle specs in {current_region}: {e}",
+            account=alias,
+        )
+
+    # --- Regional Resources ---
+    # Instances
     for page in _safe_paginator(
         ls_client.get_paginator("get_instances").paginate, account=alias
     ):
         for inst in page.get("instances", []):
+            bundle_id = inst.get("bundleId")
+            specs = bundle_specs.get(bundle_id, {})
+            firewall_rules = []
+            try:
+                port_states = ls_client.get_instance_port_states(
+                    instanceName=inst["name"]
+                ).get("portStates", [])
+                firewall_rules = port_states
+            except Exception as e:
+                log(
+                    "warning",
+                    f"Could not fetch firewall rules for instance {inst.get('name')}: {e}",
+                    account=alias,
+                )
+
             out.append(
                 {
-                    "ResourceType": "Instance",
                     "Name": inst.get("name"),
+                    "ResourceType": "Instance",
                     "Arn": inst.get("arn"),
                     "State": inst.get("state", {}).get("name"),
+                    "Region": current_region,
                     "Location": inst.get("location", {}).get("availabilityZone"),
                     "BlueprintOrEngine": inst.get("blueprintName"),
-                    "BundleId": inst.get("bundleId"),
-                    "IpOrDnsName": inst.get("publicIpAddress"),
-                    "CreatedAt": to_local(inst.get("createdAt"), region),
-                    "Region": region,
+                    "BundleId": bundle_id,
+                    "PublicIpOrDnsName": inst.get("publicIpAddress"),
+                    "SshKeyName": inst.get("sshKeyName"),
+                    "Username": inst.get("username"),
+                    "IpAddressType": inst.get("ipAddressType"),
+                    "vCPUs": specs.get("vCPUs"),
+                    "MemoryInGB": specs.get("MemoryInGB"),
+                    "DiskSizeGB": specs.get("DiskSizeGB"),
+                    "DataTransferGB": specs.get("DataTransferGB"),
+                    "CreatedAt": to_local(inst.get("createdAt"), current_region),
+                    "FirewallRules": firewall_rules,
                     "AccountAlias": alias,
                 }
             )
 
-    # --- Databases ---
+    # Databases
     for page in _safe_paginator(
         ls_client.get_paginator("get_relational_databases").paginate, account=alias
     ):
         for db in page.get("relationalDatabases", []):
+            bundle_id = db.get("relationalDatabaseBundleId")
+            specs = bundle_specs.get(bundle_id, {})
             out.append(
                 {
-                    "ResourceType": "Database",
                     "Name": db.get("name"),
+                    "ResourceType": "Database",
                     "Arn": db.get("arn"),
                     "State": db.get("state"),
+                    "Region": current_region,
                     "Location": db.get("location", {}).get("availabilityZone"),
                     "BlueprintOrEngine": db.get("relationalDatabaseBlueprintId"),
-                    "BundleId": db.get("relationalDatabaseBundleId"),
-                    "CreatedAt": to_local(db.get("createdAt"), region),
-                    "Region": region,
+                    "BundleId": bundle_id,
+                    "vCPUs": specs.get("vCPUs"),
+                    "MemoryInGB": specs.get("MemoryInGB"),
+                    "DiskSizeGB": specs.get("DiskSizeGB"),
+                    "CreatedAt": to_local(db.get("createdAt"), current_region),
                     "AccountAlias": alias,
                 }
             )
 
-    # --- Load Balancers ---
-    for page in _safe_paginator(
-        ls_client.get_paginator("get_load_balancers").paginate, account=alias
-    ):
-        for lb in page.get("loadBalancers", []):
-            out.append(
-                {
-                    "ResourceType": "LoadBalancer",
-                    "Name": lb.get("name"),
-                    "Arn": lb.get("arn"),
-                    "State": lb.get("state"),
-                    "IpOrDnsName": lb.get("dnsName"),
-                    "Location": lb.get("location", {}).get("availabilityZone"),
-                    "CreatedAt": to_local(lb.get("createdAt"), region),
-                    "Region": region,
-                    "AccountAlias": alias,
-                }
-            )
-
-    # --- Disks (Block Storage) ---
+    # Disks (Block Storage)
     for page in _safe_paginator(
         ls_client.get_paginator("get_disks").paginate, account=alias
     ):
         for disk in page.get("disks", []):
             out.append(
                 {
-                    "ResourceType": "Disk",
                     "Name": disk.get("name"),
+                    "ResourceType": "Disk",
                     "Arn": disk.get("arn"),
                     "State": disk.get("state"),
+                    "Region": current_region,
+                    "Location": disk.get("location", {}).get("availabilityZone"),
                     "SizeInGb": disk.get("sizeInGb"),
                     "AttachedTo": disk.get("attachedTo"),
-                    "Location": disk.get("location", {}).get("availabilityZone"),
-                    "CreatedAt": to_local(disk.get("createdAt"), region),
-                    "Region": region,
+                    "CreatedAt": to_local(disk.get("createdAt"), current_region),
                     "AccountAlias": alias,
                 }
             )
 
-    # --- Static IPs ---
+    # Static IPs
     for page in _safe_paginator(
         ls_client.get_paginator("get_static_ips").paginate, account=alias
     ):
         for ip in page.get("staticIps", []):
             out.append(
                 {
-                    "ResourceType": "StaticIp",
                     "Name": ip.get("name"),
+                    "ResourceType": "StaticIp",
                     "Arn": ip.get("arn"),
-                    "IpOrDnsName": ip.get("ipAddress"),
-                    "AttachedTo": ip.get("attachedTo"),
+                    "State": "N/A",
+                    "Region": current_region,
                     "Location": ip.get("location", {}).get("availabilityZone"),
-                    "CreatedAt": to_local(ip.get("createdAt"), region),
-                    "Region": region,
+                    "PublicIpOrDnsName": ip.get("ipAddress"),
+                    "AttachedTo": ip.get("attachedTo"),
+                    "CreatedAt": to_local(ip.get("createdAt"), current_region),
                     "AccountAlias": alias,
                 }
             )
 
-    # --- Certificates ---
-    for page in _safe_paginator(
-        ls_client.get_paginator("get_certificates").paginate, account=alias
-    ):
-        for cert in page.get("certificates", []):
-            out.append(
-                {
-                    "ResourceType": "Certificate",
-                    "Name": cert.get("name"),
-                    "Arn": cert.get("arn"),
-                    "State": cert.get("status"),
-                    "IpOrDnsName": cert.get(
-                        "domainName"
-                    ),  # Using this column for the domain
-                    "ExpiresAt": to_local(cert.get("notAfter"), region),
-                    "Region": region,
-                    "AccountAlias": alias,
-                }
-            )
+    # Certificates
+    cert_resp = _safe_aws_call(ls_client.get_certificates, account=alias, default={})
+    for cert in cert_resp.get("certificates", []):
+        out.append(
+            {
+                "Name": cert.get("name"),
+                "ResourceType": "Certificate",
+                "Arn": cert.get("arn"),
+                "State": cert.get("status"),
+                "Region": current_region,
+                "PublicIpOrDnsName": cert.get("domainName"),
+                "CreatedAt": to_local(cert.get("createdAt"), current_region),
+                "ExpiresAt": to_local(cert.get("notAfter"), current_region),
+                "AccountAlias": alias,
+            }
+        )
 
-    # --- Domains ---
-    for page in _safe_paginator(
-        ls_client.get_paginator("get_domains").paginate, account=alias
-    ):
-        for domain in page.get("domains", []):
-            out.append(
-                {
-                    "ResourceType": "Domain",
-                    "Name": domain.get("name"),
-                    "Arn": domain.get("arn"),
-                    "Location": domain.get("location", {}).get("availabilityZone"),
-                    "CreatedAt": to_local(domain.get("createdAt"), region),
-                    "Region": region,
-                    "AccountAlias": alias,
-                }
-            )
+    # --- Global Resources (fetched only once from the primary region) ---
+    if is_primary_region:
+        # log("info", "Fetching global Lightsail Domains from us-east-1", account=alias)
+        try:
+            global_ls_client = aws_client("lightsail", "us-east-1", session)
+            for page in _safe_paginator(
+                global_ls_client.get_paginator("get_domains").paginate, account=alias
+            ):
+                for domain in page.get("domains", []):
+                    out.append(
+                        {
+                            "Name": domain.get("name"),
+                            "ResourceType": "Domain",
+                            "Arn": domain.get("arn"),
+                            "Region": "global",
+                            "CreatedAt": to_local(domain.get("createdAt"), "us-east-1"),
+                            "AccountAlias": alias,
+                        }
+                    )
+        except Exception as e:
+            log("error", f"Failed to fetch Lightsail domains: {e}", account=alias)
+
+    # if not out and not is_primary_region:
+    #     log(
+    #         "info",
+    #         f"No regional Lightsail resources found in {current_region}",
+    #         account=alias,
+    #     )
 
     return out
 
@@ -2175,423 +2399,153 @@ def get_cloudwatch_alarms_details(
 
 
 # --------------------------------------------------------------------------
-# IAM Collector Helpers
+# IAM COLLECTOR (Unified)
 # --------------------------------------------------------------------------
-def _get_inline_policies(
-    iam: BaseClient, entity_type: str, entity_name: str
-) -> tuple[list[str], dict]:
-    """Helper to get inline policies for any IAM entity."""
-    method_map = {
-        "user": (iam.list_user_policies, iam.get_user_policy),
-        "role": (iam.list_role_policies, iam.get_role_policy),
-        "group": (iam.list_group_policies, iam.get_group_policy),
+def get_iam_details(
+    iam_client: BaseClient, alias: str
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Return a dictionary containing details for all IAM resources (Users,
+    Roles, Groups, and Policies) for the account.
+    """
+    iam_resources = {
+        "IAMUsers": [],
+        "IAMRoles": [],
+        "IAMGroups": [],
+        "IAMPolicies": [],
     }
-    list_method, get_method = method_map[entity_type]
 
-    # Get list of policy names
-    list_kwargs = {f"{entity_type.capitalize()}Name": entity_name}
-    inlnames = list_method(**list_kwargs).get("PolicyNames", [])
+    # log("info", "Fetching all IAM resources", account=alias)
 
-    # Get policy documents
-    inl_policy_docs = {}
-    for polname in inlnames:
-        get_kwargs = {
-            f"{entity_type.capitalize()}Name": entity_name,
-            "PolicyName": polname,
-        }
-        pol_doc = get_method(**get_kwargs).get("PolicyDocument")
-        inl_policy_docs[polname] = pol_doc
-
-    return inlnames, inl_policy_docs
-
-
-def _get_attached_policies(
-    iam: BaseClient, entity_type: str, entity_name: str
-) -> list[str]:
-    """Helper to get attached policies for any IAM entity."""
-    method_map = {
-        "user": iam.list_attached_user_policies,
-        "role": iam.list_attached_role_policies,
-        "group": iam.list_attached_group_policies,
-    }
-    method = method_map[entity_type]
-
-    kwargs = {f"{entity_type.capitalize()}Name": entity_name}
-    ats = method(**kwargs).get("AttachedPolicies", [])
-    return [p["PolicyArn"] for p in ats]
-
-
-# --------------------------------------------------------------------------
-# IAM Collectors
-# --------------------------------------------------------------------------
-def get_iam_users_details(iam: BaseClient, account_alias: str) -> list[dict[str, Any]]:
-    results = []
-    paginator = iam.get_paginator("list_users")
-    for page in paginator.paginate():
+    # --- IAM Users ---
+    for page in _safe_paginator(
+        iam_client.get_paginator("list_users").paginate, account=alias
+    ):
         for user in page.get("Users", []):
             user_name = user["UserName"]
             user_summary = {
                 "UserName": user_name,
                 "UserId": user["UserId"],
                 "Arn": user["Arn"],
-                "CreateDate": to_local(user.get("CreateDate"), iam.meta.region_name),
-                "PasswordLastUsed": to_local(
-                    user.get("PasswordLastUsed"), iam.meta.region_name
+                "CreateDate": to_local(
+                    user.get("CreateDate"), iam_client.meta.region_name
                 ),
-                "Groups": [],
-                "AttachedPolicies": [],
-                "InlinePolicies": [],
-                # Remove InlinePolicyDocs to reduce redundancy
-                "AccountAlias": account_alias,
+                "PasswordLastUsed": to_local(
+                    user.get("PasswordLastUsed"), iam_client.meta.region_name
+                ),
+                "Groups": [
+                    g["GroupName"]
+                    for g in iam_client.list_groups_for_user(UserName=user_name).get(
+                        "Groups", []
+                    )
+                ],
+                "AttachedPolicies": [
+                    p["PolicyArn"]
+                    for p in iam_client.list_attached_user_policies(
+                        UserName=user_name
+                    ).get("AttachedPolicies", [])
+                ],
+                "InlinePolicies": iam_client.list_user_policies(UserName=user_name).get(
+                    "PolicyNames", []
+                ),
+                "AccountAlias": alias,
             }
+            iam_resources["IAMUsers"].append(user_summary)
 
-            # Groups
-            groups = iam.list_groups_for_user(UserName=user_name).get("Groups", [])
-            user_summary["Groups"] = [g["GroupName"] for g in groups]
-
-            # Attached managed policies
-            ats = iam.list_attached_user_policies(UserName=user_name).get(
-                "AttachedPolicies", []
-            )
-            user_summary["AttachedPolicies"] = [p["PolicyArn"] for p in ats]
-
-            # Inline policies (names only, no docs)
-            user_summary["InlinePolicies"] = iam.list_user_policies(
-                UserName=user_name
-            ).get("PolicyNames", [])
-
-            results.append(user_summary)
-    return results
-
-
-def get_iam_roles_details(iam: BaseClient, account_alias: str) -> list[dict[str, Any]]:
-    results = []
-    paginator = iam.get_paginator("list_roles")
-    for page in paginator.paginate():
+    # --- IAM Roles ---
+    for page in _safe_paginator(
+        iam_client.get_paginator("list_roles").paginate, account=alias
+    ):
         for role in page.get("Roles", []):
             role_name = role["RoleName"]
-
-            # Extract service principals from trust policy
             trust_policy = role.get("AssumeRolePolicyDocument", {})
             service_principals = []
             if trust_policy:
                 for stmt in trust_policy.get("Statement", []):
                     principal = stmt.get("Principal", {})
                     if "Service" in principal:
-                        if isinstance(principal["Service"], list):
-                            service_principals.extend(principal["Service"])
-                        else:
-                            service_principals.append(principal["Service"])
+                        service_principals.extend(
+                            principal["Service"]
+                            if isinstance(principal["Service"], list)
+                            else [principal["Service"]]
+                        )
 
             role_summary = {
                 "RoleName": role_name,
                 "RoleId": role["RoleId"],
                 "Arn": role["Arn"],
-                "CreateDate": to_local(role.get("CreateDate"), iam.meta.region_name),
-                "ServicePrincipals": service_principals,  # Replace full trust policy with just services
-                "AttachedPolicies": [],
-                "InlinePolicies": [],
-                # Remove InlinePolicyDocs to reduce redundancy
-                "AccountAlias": account_alias,
+                "CreateDate": to_local(
+                    role.get("CreateDate"), iam_client.meta.region_name
+                ),
+                "ServicePrincipals": service_principals,
+                "AttachedPolicies": [
+                    p["PolicyArn"]
+                    for p in iam_client.list_attached_role_policies(
+                        RoleName=role_name
+                    ).get("AttachedPolicies", [])
+                ],
+                "InlinePolicies": iam_client.list_role_policies(RoleName=role_name).get(
+                    "PolicyNames", []
+                ),
+                "AccountAlias": alias,
             }
+            iam_resources["IAMRoles"].append(role_summary)
 
-            # Attached managed policies
-            ats = iam.list_attached_role_policies(RoleName=role_name).get(
-                "AttachedPolicies", []
-            )
-            role_summary["AttachedPolicies"] = [p["PolicyArn"] for p in ats]
-
-            # Inline policies (names only)
-            role_summary["InlinePolicies"] = iam.list_role_policies(
-                RoleName=role_name
-            ).get("PolicyNames", [])
-
-            results.append(role_summary)
-    return results
-
-
-def get_iam_groups_details(iam: BaseClient, account_alias: str) -> list[dict[str, Any]]:
-    results = []
-    paginator = iam.get_paginator("list_groups")
-    for page in paginator.paginate():
+    # --- IAM Groups ---
+    for page in _safe_paginator(
+        iam_client.get_paginator("list_groups").paginate, account=alias
+    ):
         for group in page.get("Groups", []):
             group_name = group["GroupName"]
             group_summary = {
                 "GroupName": group_name,
                 "GroupId": group["GroupId"],
                 "Arn": group["Arn"],
-                "CreateDate": to_local(group.get("CreateDate"), iam.meta.region_name),
-                "AttachedPolicies": [],
-                "InlinePolicies": [],
-                # Remove InlinePolicyDocs to reduce redundancy
-                "Members": [],
-                "AccountAlias": account_alias,
+                "CreateDate": to_local(
+                    group.get("CreateDate"), iam_client.meta.region_name
+                ),
+                "AttachedPolicies": [
+                    p["PolicyArn"]
+                    for p in iam_client.list_attached_group_policies(
+                        GroupName=group_name
+                    ).get("AttachedPolicies", [])
+                ],
+                "InlinePolicies": iam_client.list_group_policies(
+                    GroupName=group_name
+                ).get("PolicyNames", []),
+                "Members": [
+                    u["UserName"]
+                    for u in iam_client.get_group(GroupName=group_name).get("Users", [])
+                ],
+                "AccountAlias": alias,
             }
+            iam_resources["IAMGroups"].append(group_summary)
 
-            # Attached managed policies
-            ats = iam.list_attached_group_policies(GroupName=group_name).get(
-                "AttachedPolicies", []
-            )
-            group_summary["AttachedPolicies"] = [p["PolicyArn"] for p in ats]
-
-            # Inline policies
-            group_summary["InlinePolicies"] = iam.list_group_policies(
-                GroupName=group_name
-            ).get("PolicyNames", [])
-
-            # Members
-            mem = iam.get_group(GroupName=group_name).get("Users", [])
-            group_summary["Members"] = [u["UserName"] for u in mem]
-
-            results.append(group_summary)
-    return results
-
-
-def get_iam_policies_details(
-    iam: BaseClient, account_alias: str
-) -> list[dict[str, Any]]:
-    results = []
-    paginator = iam.get_paginator("list_policies")
-
-    # Comprehensive AWS service prefix mapping
-    service_prefixes = {
-        # AI/ML Services
-        "Bedrock": "Bedrock",
-        "Comprehend": "Comprehend",
-        "Forecast": "Forecast",
-        "Lex": "Lex",
-        "Polly": "Polly",
-        "Rekognition": "Rekognition",
-        "SageMaker": "SageMaker",
-        "Textract": "Textract",
-        "Transcribe": "Transcribe",
-        "Translate": "Translate",
-        "MachineLearning": "Machine Learning",
-        "Personalize": "Personalize",
-        "Kendra": "Kendra",
-        "TensorFlow": "TensorFlow",
-        "DeepLens": "DeepLens",
-        "DeepRacer": "DeepRacer",
-        "FraudDetector": "Fraud Detector",
-        "CodeWhisperer": "CodeWhisperer",
-        "Q": "Q",
-        # Analytics
-        "Athena": "Athena",
-        "CloudSearch": "CloudSearch",
-        "DataBrew": "DataBrew",
-        "EMR": "EMR",
-        "ElasticMapReduce": "EMR",
-        "OpenSearchService": "OpenSearch Service",
-        "Elasticsearch": "Elasticsearch",
-        "Kinesis": "Kinesis",
-        "QuickSight": "QuickSight",
-        "Redshift": "Redshift",
-        "Glue": "Glue",
-        "DataPipeline": "Data Pipeline",
-        "LakeFormation": "Lake Formation",
-        "MSK": "MSK",
-        "ManagedStreamingKafka": "MSK",
-        # Compute
-        "EC2": "EC2",
-        "AutoScaling": "Auto Scaling",
-        "Lambda": "Lambda",
-        "ElasticBeanstalk": "Elastic Beanstalk",
-        "ECS": "ECS",
-        "EKS": "EKS",
-        "Batch": "Batch",
-        "Fargate": "Fargate",
-        "LightSail": "LightSail",
-        "AppRunner": "App Runner",
-        "Serverless": "Serverless",
-        # Containers
-        "ECR": "ECR",
-        "ContainerRegistry": "ECR",
-        "EKS": "EKS",
-        "ECS": "ECS",
-        "AppMesh": "App Mesh",
-        # Database
-        "RDS": "RDS",
-        "DynamoDB": "DynamoDB",
-        "DocumentDB": "DocumentDB",
-        "ElastiCache": "ElastiCache",
-        "Neptune": "Neptune",
-        "QLDB": "QLDB",
-        "Timestream": "Timestream",
-        "Keyspaces": "Keyspaces",
-        "MemoryDB": "MemoryDB",
-        "Aurora": "Aurora",
-        # Developer Tools
-        "CodeBuild": "CodeBuild",
-        "CodeCommit": "CodeCommit",
-        "CodeDeploy": "CodeDeploy",
-        "CodePipeline": "CodePipeline",
-        "CodeStar": "CodeStar",
-        "CodeArtifact": "CodeArtifact",
-        "CodeGuru": "CodeGuru",
-        "Cloud9": "Cloud9",
-        "XRay": "X-Ray",
-        # Management & Governance
-        "CloudWatch": "CloudWatch",
-        "CloudFormation": "CloudFormation",
-        "CloudTrail": "CloudTrail",
-        "Config": "Config",
-        "Organizations": "Organizations",
-        "SSM": "Systems Manager",
-        "SystemsManager": "Systems Manager",
-        "ControlTower": "Control Tower",
-        "License": "License Manager",
-        "ServiceCatalog": "Service Catalog",
-        "Chatbot": "Chatbot",
-        "Console": "Console",
-        "Health": "Health Dashboard",
-        "AutoScaling": "Auto Scaling",
-        "OpsWorks": "OpsWorks",
-        # Networking & Content Delivery
-        "VPC": "VPC",
-        "CloudFront": "CloudFront",
-        "Route53": "Route 53",
-        "APIGateway": "API Gateway",
-        "AppMesh": "App Mesh",
-        "DirectConnect": "Direct Connect",
-        "GlobalAccelerator": "Global Accelerator",
-        "ELB": "Elastic Load Balancing",
-        "ElasticLoadBalancing": "Elastic Load Balancing",
-        "PrivateNetworks": "Private Networks",
-        "NetworkManager": "Network Manager",
-        "PrivateLink": "PrivateLink",
-        "Transit": "Transit Gateway",
-        # Security, Identity & Compliance
-        "IAM": "IAM",
-        "Cognito": "Cognito",
-        "GuardDuty": "GuardDuty",
-        "Inspector": "Inspector",
-        "Macie": "Macie",
-        "SecretsManager": "Secrets Manager",
-        "SecurityHub": "Security Hub",
-        "Shield": "Shield",
-        "SingleSignOn": "Single Sign-On",
-        "SSO": "Single Sign-On",
-        "WAF": "WAF",
-        "Firewall": "Firewall Manager",
-        "Directory": "Directory Service",
-        "KMS": "KMS",
-        "IdentityCenter": "IAM Identity Center",
-        "STS": "Security Token Service",
-        "ARCZonalShift": "ARC Zonal Shift",
-        "Artifact": "Artifact",
-        "CertificateManager": "Certificate Manager",
-        "ACM": "Certificate Manager",
-        "Detective": "Detective",
-        "RAM": "Resource Access Manager",
-        "Verified": "Verified Permissions",
-        "IVS": "IVS",
-        # Storage
-        "S3": "S3",
-        "EFS": "EFS",
-        "EBS": "EBS",
-        "FSx": "FSx",
-        "StorageGateway": "Storage Gateway",
-        "Backup": "Backup",
-        "SnowFamily": "Snow Family",
-        "SimSpace": "SimSpace Weaver",
-        "Transfer": "Transfer Family",
-        # Application Integration
-        "SNS": "SNS",
-        "SQS": "SQS",
-        "SWF": "SWF",
-        "StepFunctions": "Step Functions",
-        "AppFlow": "AppFlow",
-        "AppSync": "AppSync",
-        "EventBridge": "EventBridge",
-        "MQ": "MQ",
-        "SES": "SES",
-        "SimpleEmail": "SES",
-        # Business Applications
-        "Connect": "Connect",
-        "Honeycode": "Honeycode",
-        "Pinpoint": "Pinpoint",
-        "SimpleWorkflow": "SWF",
-        "WorkDocs": "WorkDocs",
-        "WorkMail": "WorkMail",
-        "Chime": "Chime",
-        "Wickr": "Wickr",
-        # End User Computing
-        "WorkSpaces": "WorkSpaces",
-        "AppStream": "AppStream",
-        "WorkLink": "WorkLink",
-        # IoT
-        "IoT": "IoT",
-        "Greengrass": "Greengrass",
-        "FreeRTOS": "FreeRTOS",
-        # Blockchain
-        "ManagedBlockchain": "Managed Blockchain",
-        "QuantumLedger": "QLDB",
-        # Satellite
-        "GroundStation": "Ground Station",
-        # Robotics
-        "RoboMaker": "RoboMaker",
-        # Game Development
-        "GameLift": "GameLift",
-        # AR & VR
-        "Sumerian": "Sumerian",
-        # Customer Engagement
-        "Connect": "Connect",
-        "PinpointSMS": "Pinpoint SMS",
-        # Media Services
-        "MediaConvert": "MediaConvert",
-        "MediaLive": "MediaLive",
-        "MediaPackage": "MediaPackage",
-        "MediaStore": "MediaStore",
-        "MediaTailor": "MediaTailor",
-        "Elemental": "Elemental",
-        # Migration & Transfer
-        "ApplicationDiscovery": "Application Discovery",
-        "DMS": "Database Migration Service",
-        "DataSync": "DataSync",
-        "MigrationHub": "Migration Hub",
-        "SMS": "Server Migration Service",
-        "Transfer": "Transfer Family",
-        # Quantum Computing
-        "Braket": "Braket",
-        # Billing & Cost Management
-        "Budgets": "Budgets",
-        "CostExplorer": "Cost Explorer",
-        "Pricing": "Pricing Calculator",
-    }
-
-    # Process both AWS and Customer managed policies
+    # --- IAM Policies ---
+    paginator = iam_client.get_paginator("list_policies")
     for scope in ["Local", "AWS"]:
         policy_type = "Customer Managed" if scope == "Local" else "AWS Managed"
         for page in paginator.paginate(Scope=scope):
             for policy in page.get("Policies", []):
-                # Skip unattached AWS managed policies
-                if scope == "AWS" and policy["AttachmentCount"] == 0:
+                if scope == "AWS" and policy.get("AttachmentCount", 0) == 0:
                     continue
 
-                # Extract service category from policy name
                 service_category = ""
                 if scope == "AWS":
                     name = policy["PolicyName"]
-
-                    # Remove common prefixes
                     if name.startswith("Amazon"):
                         name = name[6:]
                     elif name.startswith("AWS"):
                         name = name[3:]
-
-                    # Match against known service prefixes
-                    for prefix, service_name in service_prefixes.items():
+                    for prefix, service_name in SERVICE_PREFIXES.items():
                         if name.startswith(prefix):
                             service_category = service_name
                             break
-
-                    # If not matched by known prefixes, try to extract from ARN
                     if not service_category:
-                        # Example ARN: arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
                         arn_parts = policy["Arn"].split("/")
                         if len(arn_parts) > 1 and "service-role" in arn_parts:
                             role_part = arn_parts[-1]
-                            for prefix, service_name in service_prefixes.items():
+                            for prefix, service_name in SERVICE_PREFIXES.items():
                                 if prefix in role_part:
                                     service_category = service_name
                                     break
@@ -2600,65 +2554,748 @@ def get_iam_policies_details(
                     "PolicyName": policy["PolicyName"],
                     "PolicyId": policy["PolicyId"],
                     "Arn": policy["Arn"],
-                    "AttachmentCount": policy["AttachmentCount"],
+                    "AttachmentCount": policy.get("AttachmentCount", 0),
                     "DefaultVersionId": policy["DefaultVersionId"],
                     "PolicyType": policy_type,
                     "ServiceCategory": service_category,
                     "AttachmentEntities": [],
                     "CreateDate": to_local(
-                        policy.get("CreateDate"), iam.meta.region_name
+                        policy.get("CreateDate"), iam_client.meta.region_name
                     ),
                     "UpdateDate": to_local(
-                        policy.get("UpdateDate"), iam.meta.region_name
+                        policy.get("UpdateDate"), iam_client.meta.region_name
                     ),
                     "PolicyDocument": {},
-                    "AccountAlias": account_alias,
+                    "AccountAlias": alias,
                 }
 
-                # Get policy document
                 try:
-                    ver = iam.get_policy_version(
-                        PolicyArn=policy["Arn"],
-                        VersionId=policy["DefaultVersionId"],
+                    ver = iam_client.get_policy_version(
+                        PolicyArn=policy["Arn"], VersionId=policy["DefaultVersionId"]
                     )
-                    # For AWS managed policies, extract action patterns without full document
                     if scope == "AWS":
                         actions = []
                         for stmt in ver["PolicyVersion"]["Document"].get(
                             "Statement", []
                         ):
                             if "Action" in stmt:
-                                if isinstance(stmt["Action"], list):
-                                    actions.extend(stmt["Action"])
-                                else:
-                                    actions.append(stmt["Action"])
+                                actions.extend(
+                                    stmt["Action"]
+                                    if isinstance(stmt["Action"], list)
+                                    else [stmt["Action"]]
+                                )
                         policy_summary["ActionPatterns"] = list(set(actions))
                     else:
-                        # Store full document only for customer managed policies
                         policy_summary["PolicyDocument"] = ver["PolicyVersion"][
                             "Document"
                         ]
                 except Exception:
                     pass
 
-                # Find where attached
-                attached = iam.list_entities_for_policy(PolicyArn=policy["Arn"])
-                for typ in ("PolicyGroups", "PolicyUsers", "PolicyRoles"):
-                    for ent in attached.get(typ, []):
-                        entity_type = typ.replace("Policy", "")[:-1]  # e.g. "Group"
-                        entity_name_key = {
-                            "Group": "GroupName",
-                            "User": "UserName",
-                            "Role": "RoleName",
-                        }[entity_type]
-
+                attached_entities = iam_client.list_entities_for_policy(
+                    PolicyArn=policy["Arn"]
+                )
+                for entity_type_plural in (
+                    "PolicyGroups",
+                    "PolicyUsers",
+                    "PolicyRoles",
+                ):
+                    entity_type_singular = entity_type_plural.replace("Policy", "")[:-1]
+                    name_key = f"{entity_type_singular}Name"
+                    for entity in attached_entities.get(entity_type_plural, []):
                         policy_summary["AttachmentEntities"].append(
-                            {"Type": entity_type, "Name": ent[entity_name_key]}
+                            {"Type": entity_type_singular, "Name": entity[name_key]}
                         )
 
-                results.append(policy_summary)
+                iam_resources["IAMPolicies"].append(policy_summary)
 
-    return results
+    return iam_resources
+
+
+# --------------------------------------------------------------------------
+# VPC INVENTORY COLLECTOR (Unified)
+# --------------------------------------------------------------------------
+def get_vpc_inventory(
+    ec2_client: BaseClient, alias: str
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Return a dictionary containing details for all core VPC resources.
+    """
+    vpc_resources = {
+        "VPCs": [],
+        "Subnets": [],
+        "RouteTables": [],
+        "SecurityGroups": [],
+    }
+    region = ec2_client.meta.region_name
+    # log("info", f"Fetching all VPC resources in {region}", account=alias)
+
+    # --- VPCs ---
+    for page in _safe_paginator(
+        ec2_client.get_paginator("describe_vpcs").paginate, account=alias
+    ):
+        for vpc in page.get("Vpcs", []):
+            tags = {t["Key"]: t["Value"] for t in vpc.get("Tags", [])}
+            vpc_resources["VPCs"].append(
+                {
+                    "VpcId": vpc.get("VpcId"),
+                    "State": vpc.get("State"),
+                    "IsDefault": vpc.get("IsDefault"),
+                    "CidrBlock": vpc.get("CidrBlock"),
+                    "Tags": tags,
+                    "Region": region,
+                    "AccountAlias": alias,
+                }
+            )
+
+    # --- Subnets ---
+    for page in _safe_paginator(
+        ec2_client.get_paginator("describe_subnets").paginate, account=alias
+    ):
+        for subnet in page.get("Subnets", []):
+            tags = {t["Key"]: t["Value"] for t in subnet.get("Tags", [])}
+            vpc_resources["Subnets"].append(
+                {
+                    "SubnetId": subnet.get("SubnetId"),
+                    "VpcId": subnet.get("VpcId"),
+                    "State": subnet.get("State"),
+                    "AvailabilityZone": subnet.get("AvailabilityZone"),
+                    "CidrBlock": subnet.get("CidrBlock"),
+                    "AvailableIpAddressCount": subnet.get("AvailableIpAddressCount"),
+                    "MapPublicIpOnLaunch": subnet.get("MapPublicIpOnLaunch"),
+                    "Tags": tags,
+                    "Region": region,
+                    "AccountAlias": alias,
+                }
+            )
+
+    # --- Route Tables ---
+    for page in _safe_paginator(
+        ec2_client.get_paginator("describe_route_tables").paginate, account=alias
+    ):
+        for rt in page.get("RouteTables", []):
+            tags = {t["Key"]: t["Value"] for t in rt.get("Tags", [])}
+            is_main = any(a.get("Main", False) for a in rt.get("Associations", []))
+            vpc_resources["RouteTables"].append(
+                {
+                    "RouteTableId": rt.get("RouteTableId"),
+                    "VpcId": rt.get("VpcId"),
+                    "IsMain": is_main,
+                    "Routes": rt.get("Routes"),
+                    "Associations": rt.get("Associations"),
+                    "Tags": tags,
+                    "Region": region,
+                    "AccountAlias": alias,
+                }
+            )
+
+    # --- Security Groups ---
+    for page in _safe_paginator(
+        ec2_client.get_paginator("describe_security_groups").paginate, account=alias
+    ):
+        for sg in page.get("SecurityGroups", []):
+            tags = {t["Key"]: t["Value"] for t in sg.get("Tags", [])}
+            vpc_resources["SecurityGroups"].append(
+                {
+                    "GroupId": sg.get("GroupId"),
+                    "GroupName": sg.get("GroupName"),
+                    "VpcId": sg.get("VpcId"),
+                    "Description": sg.get("Description"),
+                    "IngressRules": sg.get("IpPermissions"),
+                    "EgressRules": sg.get("IpPermissionsEgress"),
+                    "Tags": tags,
+                    "Region": region,
+                    "AccountAlias": alias,
+                }
+            )
+
+    return vpc_resources
+
+
+# --------------------------------------------------------------------------
+# GOVERNANCE COLLECTOR
+# --------------------------------------------------------------------------
+def get_governance_details(
+    sess: boto3.Session, alias: str, region: str
+) -> List[Dict[str, Any]]:
+    """Checks the status of key governance and security services."""
+    out: List[Dict[str, Any]] = []
+
+    # --- Security Hub ---
+    try:
+        sh_client = aws_client("securityhub", region, sess)
+        sh_client.describe_hub()
+        out.append(
+            {
+                "Service": "Security Hub",
+                "Status": "Enabled",
+                "Details": "Security Hub is enabled for this region.",
+            }
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "InvalidAccessException":
+            out.append(
+                {"Service": "Security Hub", "Status": "Not Enabled", "Details": ""}
+            )
+        else:
+            out.append(
+                {"Service": "Security Hub", "Status": "Error", "Details": str(e)}
+            )
+    except Exception as e:
+        out.append(
+            {
+                "Service": "Security Hub",
+                "Status": "Error",
+                "Details": f"Region may not be supported or other error: {e}",
+            }
+        )
+
+    # --- GuardDuty ---
+    try:
+        gd_client = aws_client("guardduty", region, sess)
+        detectors = gd_client.list_detectors().get("DetectorIds", [])
+        if detectors:
+            status = gd_client.get_detector(DetectorId=detectors[0]).get(
+                "Status", "UNKNOWN"
+            )
+            out.append(
+                {
+                    "Service": "GuardDuty",
+                    "Status": status.title(),
+                    "Details": f"DetectorId: {detectors[0]}",
+                }
+            )
+        else:
+            out.append(
+                {
+                    "Service": "GuardDuty",
+                    "Status": "Not Found",
+                    "Details": "No GuardDuty detector found in this region.",
+                }
+            )
+    except Exception as e:
+        out.append({"Service": "GuardDuty", "Status": "Error", "Details": str(e)})
+
+    # --- AWS Config ---
+    try:
+        config_client = aws_client("config", region, sess)
+        recorders = config_client.describe_configuration_recorder_status().get(
+            "ConfigurationRecordersStatus", []
+        )
+        if not recorders:
+            out.append(
+                {
+                    "Service": "AWS Config",
+                    "Status": "Not Enabled",
+                    "Details": "No configuration recorder found.",
+                }
+            )
+        else:
+            for recorder in recorders:
+                status = "Running" if recorder.get("recording") else "Stopped"
+                name = recorder.get("name")
+                out.append(
+                    {
+                        "Service": "AWS Config",
+                        "Status": status,
+                        "Details": f"Recorder: {name}",
+                    }
+                )
+    except Exception as e:
+        out.append({"Service": "AWS Config", "Status": "Error", "Details": str(e)})
+
+    # --- Amazon Inspector ---
+    try:
+        inspector_client = aws_client("inspector2", region, sess)
+        status = inspector_client.get_status().get("status", "UNKNOWN")
+        out.append(
+            {
+                "Service": "Inspector",
+                "Status": status.replace("_", " ").title(),
+                "Details": "Checks for EC2, ECR, and Lambda vulnerabilities.",
+            }
+        )
+    except Exception as e:
+        out.append({"Service": "Inspector", "Status": "Error", "Details": str(e)})
+
+    # --- Global Service Checks (run only once per account in us-east-1) ---
+    if region == "us-east-1":
+        # --- CloudTrail ---
+        try:
+            ct_client = aws_client("cloudtrail", region, sess)
+            trails = ct_client.describe_trails().get("trailList", [])
+            if not trails:
+                out.append(
+                    {
+                        "Service": "CloudTrail",
+                        "Status": "No Trails Found",
+                        "Details": "A multi-region trail is a security best practice.",
+                    }
+                )
+            else:
+                multi_region_trail_exists = False
+                for trail in trails:
+                    if trail.get("IsMultiRegionTrail"):
+                        multi_region_trail_exists = True
+                        status = "Enabled (Multi-Region)"
+                        out.append(
+                            {
+                                "Service": "CloudTrail",
+                                "Status": status,
+                                "Details": f"Trail: {trail.get('Name')}",
+                            }
+                        )
+                if not multi_region_trail_exists:
+                    out.append(
+                        {
+                            "Service": "CloudTrail",
+                            "Status": "Enabled (Single Region Only)",
+                            "Details": "No multi-region trail found.",
+                        }
+                    )
+        except Exception as e:
+            out.append({"Service": "CloudTrail", "Status": "Error", "Details": str(e)})
+
+        # --- S3 Block Public Access ---
+        try:
+            s3_control_client = aws_client("s3control", region, sess)
+            acct_id = sess.client("sts").get_caller_identity()["Account"]
+            config = s3_control_client.get_public_access_block(AccountId=acct_id).get(
+                "PublicAccessBlockConfiguration", {}
+            )
+            if all(config.values()):
+                out.append(
+                    {
+                        "Service": "S3 Block Public Access",
+                        "Status": "Enabled",
+                        "Details": "All public access is blocked at the account level.",
+                    }
+                )
+            else:
+                out.append(
+                    {
+                        "Service": "S3 Block Public Access",
+                        "Status": "Not Fully Enabled",
+                        "Details": "One or more public access settings are disabled.",
+                    }
+                )
+        except Exception as e:
+            out.append(
+                {
+                    "Service": "S3 Block Public Access",
+                    "Status": "Error",
+                    "Details": str(e),
+                }
+            )
+
+        # --- AWS Trusted Advisor (via Support Plan) ---
+        try:
+            support_client = aws_client("support", region, sess)
+            severity_levels = support_client.describe_severity_levels().get(
+                "severityLevels", []
+            )
+            if any(level["code"] == "urgent" for level in severity_levels):
+                out.append(
+                    {
+                        "Service": "Trusted Advisor (Support Plan)",
+                        "Status": "Business or Enterprise",
+                        "Details": "Full Trusted Advisor checks are available.",
+                    }
+                )
+            else:
+                out.append(
+                    {
+                        "Service": "Trusted Advisor (Support Plan)",
+                        "Status": "Developer or Basic",
+                        "Details": "Limited Trusted Advisor checks are available.",
+                    }
+                )
+        except Exception as e:
+            out.append(
+                {
+                    "Service": "Trusted Advisor (Support Plan)",
+                    "Status": "Error",
+                    "Details": str(e),
+                }
+            )
+
+    for item in out:
+        item.update({"AccountAlias": alias, "Region": region})
+    return out
+
+
+# --------------------------------------------------------------------------
+# COST-OPTIMIZATION COLLECTOR
+# --------------------------------------------------------------------------
+def get_cost_opportunities(
+    ec2_client: BaseClient,
+    s3_client: BaseClient,
+    elbv2_client: BaseClient,
+    cw_client: BaseClient,
+    lambda_client: BaseClient,
+    rds_client: BaseClient,
+    alias: str,
+) -> List[Dict[str, Any]]:
+    """Identifies potential cost savings opportunities based on AWS best practices."""
+    out: List[Dict[str, Any]] = []
+    region = ec2_client.meta.region_name
+    # log("info", f"Scanning for cost opportunities in {region}", account=alias)
+
+    fourteen_days_ago = datetime.now(timezone.utc) - timedelta(days=14)
+    seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+
+    # --- 1. Unattached EBS Volumes ---
+    try:
+        volumes = ec2_client.describe_volumes(
+            Filters=[{"Name": "status", "Values": ["available"]}]
+        ).get("Volumes", [])
+        for vol in volumes:
+            out.append(
+                {
+                    "ResourceType": "EBS Volume",
+                    "ResourceId": vol["VolumeId"],
+                    "Reason": "Unattached (Available)",
+                    "Details": f"Size: {vol['Size']} GiB, Type: {vol['VolumeType']}, Created: {vol['CreateTime'].strftime('%Y-%m-%d')}",
+                }
+            )
+    except Exception as e:
+        log(
+            "warning",
+            f"Could not check for unattached EBS volumes in {region}: {e}",
+            account=alias,
+        )
+
+    # --- 2. Unassociated Elastic IPs ---
+    try:
+        addresses = ec2_client.describe_addresses().get("Addresses", [])
+        for addr in addresses:
+            if "AssociationId" not in addr:
+                out.append(
+                    {
+                        "ResourceType": "Elastic IP",
+                        "ResourceId": addr["PublicIp"],
+                        "Reason": "Unassociated",
+                        "Details": f"AllocationId: {addr['AllocationId']}",
+                    }
+                )
+    except Exception as e:
+        log(
+            "warning",
+            f"Could not check for unassociated Elastic IPs in {region}: {e}",
+            account=alias,
+        )
+
+    # --- 3. Idle Load Balancers ---
+    try:
+        lbs = elbv2_client.describe_load_balancers().get("LoadBalancers", [])
+        for lb in lbs:
+            lb_arn = lb["LoadBalancerArn"]
+            target_groups = elbv2_client.describe_target_groups(
+                LoadBalancerArn=lb_arn
+            ).get("TargetGroups", [])
+            if not target_groups:
+                out.append(
+                    {
+                        "ResourceType": "Load Balancer",
+                        "ResourceId": lb["DNSName"],
+                        "Reason": "Idle (No Target Groups)",
+                        "Details": f"Name: {lb['LoadBalancerName']}",
+                    }
+                )
+                continue
+            is_idle = True
+            for tg in target_groups:
+                health = elbv2_client.describe_target_health(
+                    TargetGroupArn=tg["TargetGroupArn"]
+                )
+                if any(
+                    t.get("TargetHealth", {}).get("State") == "healthy"
+                    for t in health.get("TargetHealthDescriptions", [])
+                ):
+                    is_idle = False
+                    break
+            if is_idle:
+                out.append(
+                    {
+                        "ResourceType": "Load Balancer",
+                        "ResourceId": lb["DNSName"],
+                        "Reason": "Idle (No Healthy Targets)",
+                        "Details": f"Name: {lb['LoadBalancerName']}",
+                    }
+                )
+    except Exception as e:
+        log(
+            "warning",
+            f"Could not check for idle Load Balancers in {region}: {e}",
+            account=alias,
+        )
+
+    # --- 4. Old EBS Snapshots ---
+    try:
+        ninety_days_ago = datetime.now(timezone.utc) - timedelta(days=90)
+        paginator = ec2_client.get_paginator("describe_snapshots")
+        for page in paginator.paginate(OwnerIds=["self"]):
+            for snap in page.get("Snapshots", []):
+                if snap["StartTime"] < ninety_days_ago:
+                    out.append(
+                        {
+                            "ResourceType": "EBS Snapshot",
+                            "ResourceId": snap["SnapshotId"],
+                            "Reason": "Old Snapshot (>90 days)",
+                            "Details": f"Created: {snap['StartTime'].strftime('%Y-%m-%d')}, Size: {snap['VolumeSize']} GiB",
+                            "Description": snap.get("Description", ""),
+                            "VolumeId": snap.get("VolumeId", ""),
+                            "Encrypted": snap.get("Encrypted", False),
+                            "StorageTier": snap.get("StorageTier", "standard"),
+                            "Tags": {
+                                t["Key"]: t["Value"] for t in snap.get("Tags", [])
+                            },
+                        }
+                    )
+    except Exception as e:
+        log(
+            "warning",
+            f"Could not check for old EBS snapshots in {region}: {e}",
+            account=alias,
+        )
+
+    # --- 5. S3 Buckets without Effective Lifecycle Policies & Incomplete Multipart Uploads ---
+    try:
+        buckets = s3_client.list_buckets().get("Buckets", [])
+        for bucket in buckets:
+            bucket_name = bucket["Name"]
+            has_effective_policy = False
+            try:
+                lifecycle = s3_client.get_bucket_lifecycle_configuration(
+                    Bucket=bucket_name
+                )
+                for rule in lifecycle.get("Rules", []):
+                    if rule.get("Status") == "Enabled":
+                        if (
+                            "Transition" in rule
+                            or "NoncurrentVersionTransition" in rule
+                            or "AbortIncompleteMultipartUpload" in rule
+                        ):
+                            has_effective_policy = True
+                            break
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "NoSuchLifecycleConfiguration":
+                    raise
+
+            if not has_effective_policy:
+                out.append(
+                    {
+                        "ResourceType": "S3 Bucket",
+                        "ResourceId": bucket_name,
+                        "Reason": "No Lifecycle Policy",
+                        "Details": "Consider adding a lifecycle policy to transition or expire objects.",
+                    }
+                )
+
+            # Check for old incomplete multipart uploads
+            mpu_paginator = s3_client.get_paginator("list_multipart_uploads")
+            for mpu_page in mpu_paginator.paginate(Bucket=bucket_name):
+                for upload in mpu_page.get("Uploads", []):
+                    if upload["Initiated"] < seven_days_ago:
+                        out.append(
+                            {
+                                "ResourceType": "S3 Incomplete Upload",
+                                "ResourceId": f"{bucket_name}/{upload['Key']}",
+                                "Reason": "Incomplete Multipart Upload (>7 days)",
+                                "Details": f"UploadId: {upload['UploadId']}, Initiated: {upload['Initiated'].strftime('%Y-%m-%d')}",
+                            }
+                        )
+    except Exception as e:
+        log(
+            "warning",
+            f"Could not check for S3 opportunities in {region}: {e}",
+            account=alias,
+        )
+
+    # --- 6. Underutilized EC2 Instances ---
+    try:
+        instances = ec2_client.describe_instances(
+            Filters=[{"Name": "instance-state-name", "Values": ["running"]}]
+        )
+        for reservation in instances.get("Reservations", []):
+            for instance in reservation.get("Instances", []):
+                instance_id = instance["InstanceId"]
+                metrics = cw_client.get_metric_statistics(
+                    Namespace="AWS/EC2",
+                    MetricName="CPUUtilization",
+                    Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
+                    StartTime=fourteen_days_ago,
+                    EndTime=datetime.now(timezone.utc),
+                    Period=86400,
+                    Statistics=["Maximum"],
+                )
+                if metrics["Datapoints"]:
+                    max_cpu = max(dp["Maximum"] for dp in metrics["Datapoints"])
+                    if max_cpu < 5:  # Less than 5% max utilization
+                        out.append(
+                            {
+                                "ResourceType": "EC2 Instance",
+                                "ResourceId": instance_id,
+                                "Reason": "Underutilized (CPU < 5%)",
+                                "Details": f"Type: {instance.get('InstanceType')}, Max CPU in 14 days: {max_cpu:.2f}%",
+                            }
+                        )
+    except Exception as e:
+        log(
+            "warning",
+            f"Could not check for underutilized EC2 instances in {region}: {e}",
+            account=alias,
+        )
+
+    # --- 7. Underutilized RDS Instances ---
+    try:
+        dbs = rds_client.describe_db_instances().get("DBInstances", [])
+        for db in dbs:
+            db_id = db["DBInstanceIdentifier"]
+            cpu_metrics = cw_client.get_metric_statistics(
+                Namespace="AWS/RDS",
+                MetricName="CPUUtilization",
+                Dimensions=[{"Name": "DBInstanceIdentifier", "Value": db_id}],
+                StartTime=fourteen_days_ago,
+                EndTime=datetime.now(timezone.utc),
+                Period=86400,
+                Statistics=["Maximum"],
+            )
+            conn_metrics = cw_client.get_metric_statistics(
+                Namespace="AWS/RDS",
+                MetricName="DatabaseConnections",
+                Dimensions=[{"Name": "DBInstanceIdentifier", "Value": db_id}],
+                StartTime=fourteen_days_ago,
+                EndTime=datetime.now(timezone.utc),
+                Period=86400,
+                Statistics=["Maximum"],
+            )
+            max_cpu = (
+                max(dp["Maximum"] for dp in cpu_metrics.get("Datapoints", []))
+                if cpu_metrics.get("Datapoints")
+                else 0
+            )
+            max_conn = (
+                max(dp["Maximum"] for dp in conn_metrics.get("Datapoints", []))
+                if conn_metrics.get("Datapoints")
+                else 0
+            )
+            if max_cpu < 5 and max_conn < 5:
+                out.append(
+                    {
+                        "ResourceType": "RDS Instance",
+                        "ResourceId": db_id,
+                        "Reason": "Underutilized (CPU < 5% and < 5 connections)",
+                        "Details": f"Type: {db.get('DBInstanceClass')}, Max CPU: {max_cpu:.2f}%, Max Connections: {max_conn}",
+                    }
+                )
+    except Exception as e:
+        log(
+            "warning",
+            f"Could not check for underutilized RDS instances in {region}: {e}",
+            account=alias,
+        )
+
+    # --- 8. Lambda Functions with Low Invocation or High Error Rates ---
+    try:
+        functions = lambda_client.list_functions().get("Functions", [])
+        for func in functions:
+            func_name = func["FunctionName"]
+            invocations_resp = cw_client.get_metric_statistics(
+                Namespace="AWS/Lambda",
+                MetricName="Invocations",
+                Dimensions=[{"Name": "FunctionName", "Value": func_name}],
+                StartTime=fourteen_days_ago,
+                EndTime=datetime.now(timezone.utc),
+                Period=1209600,
+                Statistics=["Sum"],
+            )
+            total_invocations = sum(
+                dp["Sum"] for dp in invocations_resp.get("Datapoints", [])
+            )
+            if total_invocations < 10:
+                out.append(
+                    {
+                        "ResourceType": "Lambda Function",
+                        "ResourceId": func_name,
+                        "Reason": "Low Invocations (< 10 in 14 days)",
+                        "Details": f"Total invocations: {total_invocations}",
+                    }
+                )
+
+            errors_resp = cw_client.get_metric_statistics(
+                Namespace="AWS/Lambda",
+                MetricName="Errors",
+                Dimensions=[{"Name": "FunctionName", "Value": func_name}],
+                StartTime=fourteen_days_ago,
+                EndTime=datetime.now(timezone.utc),
+                Period=1209600,
+                Statistics=["Sum"],
+            )
+            total_errors = sum(dp["Sum"] for dp in errors_resp.get("Datapoints", []))
+            if total_invocations > 0 and (total_errors / total_invocations) > 0.1:
+                error_rate = (total_errors / total_invocations) * 100
+                out.append(
+                    {
+                        "ResourceType": "Lambda Function",
+                        "ResourceId": func_name,
+                        "Reason": "High Error Rate (>10%)",
+                        "Details": f"Error Rate: {error_rate:.2f}% ({int(total_errors)} errors / {int(total_invocations)} invocations)",
+                    }
+                )
+
+    except Exception as e:
+        log(
+            "warning",
+            f"Could not check for Lambda opportunities in {region}: {e}",
+            account=alias,
+        )
+
+    for item in out:
+        item.update({"AccountAlias": alias, "Region": region})
+    return out
+
+
+# --------------------------------------------------------------------------
+# UNIFIED COLLECTOR WRAPPERS
+# --------------------------------------------------------------------------
+def get_ec2_inventory(
+    ec2_client: BaseClient,
+    backup_client: BaseClient,
+    alias: str,
+    session: boto3.Session,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Unified collector for all EC2-related resources."""
+    # The INFO log is silenced here for cleaner output during normal runs.
+    # log("info", f"Fetching all EC2 resources in {ec2_client.meta.region_name}", account=alias)
+    return {
+        "EC2": get_ec2_details(ec2_client, backup_client, alias, session),
+        "EC2ReservedInstances": get_ec2_reserved_instances(ec2_client, alias, session),
+    }
+
+
+def get_rds_inventory(
+    rds_client: BaseClient, alias: str, session: boto3.Session
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Unified collector for all RDS-related resources."""
+    # log("info", f"Fetching all RDS resources in {rds_client.meta.region_name}", account=alias)
+    return {
+        "RDS": get_rds_details(rds_client, alias, session),
+        "RDSReservedInstances": get_rds_reserved_instances(rds_client, alias, session),
+    }
+
+
+def get_eventbridge_inventory(
+    events_client: BaseClient, scheduler_client: BaseClient, alias: str
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Unified collector for all EventBridge-related resources."""
+    # log("info", f"Fetching all EventBridge resources in {events_client.meta.region_name}", account=alias)
+    return {
+        "EventBridge": get_eventbridge_details(events_client, alias),
+        "EventBridgeScheduler": get_eventbridge_scheduler_details(
+            scheduler_client, alias
+        ),
+    }
 
 
 # --------------------------------------------------------------------------
@@ -2668,6 +3305,7 @@ GLOBAL_SERVICES = {
     "Route53": ("route53", get_route53_details),
     "SES": ("ses", get_ses_details),
     "SNS": ("sns", get_sns_details),
+    "IAM": ("iam", get_iam_details),
 }
 
 # --------------------------------------------------------------------------
@@ -2691,31 +3329,31 @@ SERVICE_COLUMNS: Dict[str, List[str]] = {
     "ALB": [
         "LoadBalancerName",
         "DNSName",
+        "State",
         "Type",
         "Scheme",
         "VpcId",
-        "State",
         "AvailabilityZones",
         "SecurityGroups",
-        "Tags",
         "Listeners",
         "TargetGroups",
+        "Tags",
         "Region",
         "AccountAlias",
     ],
     "Backup": [
         "PlanName",
+        "RuleName",
+        "SelectionName",
+        "IamRole",
+        "VaultName",
+        "Schedule",
+        "LastExecutionDate",
+        "Details",
+        "Timezone",
         "PlanId",
         "PlanArn",
         "PlanCreationDate",
-        "LastExecutionDate",
-        "RuleName",
-        "Schedule",
-        "Details",
-        "Timezone",
-        "VaultName",
-        "SelectionName",
-        "IamRole",
         "Resources",
         "ResourceTags",
         "Region",
@@ -2727,9 +3365,9 @@ SERVICE_COLUMNS: Dict[str, List[str]] = {
         "MetricName",
         "Namespace",
         "Statistic",
-        "Period",
-        "Threshold",
         "ComparisonOperator",
+        "Threshold",
+        "Period",
         "EvaluationPeriods",
         "DatapointsToAlarm",
         "ActionsEnabled",
@@ -2748,20 +3386,34 @@ SERVICE_COLUMNS: Dict[str, List[str]] = {
         "Region",
         "AccountAlias",
     ],
+    "CostOpportunities": [
+        "ResourceType",
+        "ResourceId",
+        "Reason",
+        "Details",
+        "Description",
+        "VolumeId",
+        "Encrypted",
+        "StorageTier",
+        "Tags",
+        "Region",
+        "AccountAlias",
+    ],
     "EC2": [
         "Name",
         "InstanceId",
         "InstanceType",
-        "KeyPair",
         "vCPUs",
         "Memory",
-        "NetworkPerformance",
-        "AvailabilityZone",
+        "OS",
+        "State",
         "PublicIP",
         "PrivateIP",
         "IPType",
+        "AvailabilityZone",
         "EBSVolumes",
-        "OS",
+        "KeyPair",
+        "NetworkPerformance",
         "AWSBackup",
         "Region",
         "AccountAlias",
@@ -2769,16 +3421,16 @@ SERVICE_COLUMNS: Dict[str, List[str]] = {
     "EC2ReservedInstances": [
         "ReservedInstancesId",
         "InstanceType",
-        "Scope",
+        "State",
         "InstanceCount",
         "OfferingType",
+        "Scope",
         "ProductDescription",
         "Duration",
+        "StartTime",
         "FixedPrice",
         "UsagePrice",
         "CurrencyCode",
-        "StartTime",
-        "State",
         "Region",
         "AccountAlias",
     ],
@@ -2786,10 +3438,10 @@ SERVICE_COLUMNS: Dict[str, List[str]] = {
         "ScheduleName",
         "GroupName",
         "State",
-        "Expression",
-        "Timezone",
         "Frequency",
+        "Expression",
         "Details",
+        "Timezone",
         "TargetArn",
         "Input",
         "Region",
@@ -2799,12 +3451,19 @@ SERVICE_COLUMNS: Dict[str, List[str]] = {
         "ScheduleName",
         "GroupName",
         "State",
-        "Expression",
-        "Timezone",
         "Frequency",
+        "Expression",
         "Details",
+        "Timezone",
         "TargetArn",
         "Input",
+        "Region",
+        "AccountAlias",
+    ],
+    "Governance": [
+        "Service",
+        "Status",
+        "Details",
         "Region",
         "AccountAlias",
     ],
@@ -2813,23 +3472,23 @@ SERVICE_COLUMNS: Dict[str, List[str]] = {
         "GroupId",
         "Arn",
         "CreateDate",
+        "Members",
         "AttachedPolicies",
         "InlinePolicies",
-        "Members",
         "AccountAlias",
     ],
     "IAMPolicies": [
         "PolicyName",
         "PolicyId",
         "Arn",
-        "AttachmentCount",
-        "DefaultVersionId",
         "PolicyType",
         "ServiceCategory",
-        "ActionPatterns",
-        "AttachmentEntities",
+        "AttachmentCount",
         "CreateDate",
         "UpdateDate",
+        "DefaultVersionId",
+        "ActionPatterns",
+        "AttachmentEntities",
         "PolicyDocument",
         "AccountAlias",
     ],
@@ -2856,29 +3515,31 @@ SERVICE_COLUMNS: Dict[str, List[str]] = {
     ],
     "KMS": [
         "KeyId",
+        "AliasNames",
         "Description",
-        "Enabled",
         "KeyState",
+        "Enabled",
         "KeyManager",
         "KeySpec",
         "KeyUsage",
         "Origin",
+        "RotationEnabled",
         "CreationDate",
         "DeletionDate",
         "ValidTo",
         "MultiRegion",
         "PendingDeletion",
         "PendingWindowInDays",
-        "AliasNames",
-        "Tags",
-        "RotationEnabled",
         "GrantsCount",
+        "Tags",
         "Region",
         "AccountAlias",
     ],
     "Lambda": [
         "FunctionName",
         "FunctionArn",
+        "State",
+        "LastUpdateStatus",
         "Runtime",
         "Handler",
         "Role",
@@ -2888,8 +3549,6 @@ SERVICE_COLUMNS: Dict[str, List[str]] = {
         "PackageType",
         "Architectures",
         "TracingMode",
-        "State",
-        "LastUpdateStatus",
         "LastModified",
         "KMSKeyArn",
         "CodeSize",
@@ -2901,19 +3560,26 @@ SERVICE_COLUMNS: Dict[str, List[str]] = {
         "AccountAlias",
     ],
     "Lightsail": [
-        "ResourceType",
         "Name",
-        "Arn",
+        "ResourceType",
         "State",
+        "Region",
         "Location",
+        "IpOrDnsName",
         "BlueprintOrEngine",
         "BundleId",
-        "IpOrDnsName",
+        "vCPUs",
+        "MemoryInGB",
+        "DiskSizeGB",
+        "DataTransferGB",
         "AttachedTo",
-        "SizeInGb",
-        "ExpiresAt",
+        "SshKeyName",
+        "Username",
+        "Arn",
+        "IpAddressType",
         "CreatedAt",
-        "Region",
+        "ExpiresAt",
+        "FirewallRules",
         "AccountAlias",
     ],
     "RDS": [
@@ -2923,11 +3589,11 @@ SERVICE_COLUMNS: Dict[str, List[str]] = {
         "vCPUs",
         "Memory",
         "MultiAZ",
-        "PubliclyAccessible",
         "StorageType",
         "AllocatedStorage",
         "EndpointAddress",
         "EndpointPort",
+        "PubliclyAccessible",
         "InstanceCreateTime",
         "LicenseModel",
         "VpcSecurityGroupIds",
@@ -2939,14 +3605,14 @@ SERVICE_COLUMNS: Dict[str, List[str]] = {
     "RDSReservedInstances": [
         "ReservedDBInstanceId",
         "DBInstanceClass",
-        "Duration",
-        "FixedPrice",
-        "UsagePrice",
-        "CurrencyCode",
-        "StartTime",
         "State",
         "MultiAZ",
         "OfferingType",
+        "Duration",
+        "StartTime",
+        "FixedPrice",
+        "UsagePrice",
+        "CurrencyCode",
         "ProductDescription",
         "Region",
         "AccountAlias",
@@ -2954,42 +3620,63 @@ SERVICE_COLUMNS: Dict[str, List[str]] = {
     "Route53": [
         "Name",
         "Id",
-        "Config",
         "ResourceRecordSetCount",
+        "Config",
         "RecordTypes",
-        "Tags",
-        "VPCAssociations",
         "HealthChecks",
         "DNSSECStatus",
+        "VPCAssociations",
         "DelegationSet",
+        "Tags",
+        "Region",
+        "AccountAlias",
+    ],
+    "RouteTables": [
+        "RouteTableId",
+        "VpcId",
+        "IsMain",
+        "Routes",
+        "Associations",
+        "Tags",
         "Region",
         "AccountAlias",
     ],
     "S3": [
         "BucketName",
-        "CreationDate",
         "Region",
+        "CreationDate",
         "Size",
         "ObjectCount",
-        "LastMetricsUpdate",
-        "MetricsCalculationMethod",
         "Versioning",
         "Encryption",
         "PublicAccess",
         "PolicyStatus",
+        "LastMetricsUpdate",
+        "MetricsCalculationMethod",
         "LifecycleRules",
         "Tags",
         "AccountAlias",
     ],
     "SavingsPlans": [
         "SavingsPlanId",
-        "SavingsPlanArn",
         "State",
+        "PlanType",
+        "PaymentOption",
+        "Term",
         "Start",
         "End",
-        "Term",
-        "PaymentOption",
-        "PlanType",
+        "SavingsPlanArn",
+        "Region",
+        "AccountAlias",
+    ],
+    "SecurityGroups": [
+        "GroupId",
+        "GroupName",
+        "Description",
+        "VpcId",
+        "IngressRules",
+        "EgressRules",
+        "Tags",
         "Region",
         "AccountAlias",
     ],
@@ -3000,10 +3687,41 @@ SERVICE_COLUMNS: Dict[str, List[str]] = {
         "AccountAlias",
     ],
     "SNS": [
-        "TopicArn",
         "TopicName",
+        "TopicArn",
         "SubscriptionCount",
         "Subscriptions",
+        "Region",
+        "AccountAlias",
+    ],
+    "Subnets": [
+        "SubnetId",
+        "VpcId",
+        "State",
+        "AvailabilityZone",
+        "CidrBlock",
+        "AvailableIpAddressCount",
+        "MapPublicIpOnLaunch",
+        "Tags",
+        "Region",
+        "AccountAlias",
+    ],
+    "VPCs": [
+        "VpcId",
+        "State",
+        "IsDefault",
+        "CidrBlock",
+        "Tags",
+        "Region",
+        "AccountAlias",
+    ],
+    "VPN": [
+        "VpnConnectionId",
+        "Name",
+        "State",
+        "CustomerGateway",
+        "CustomerGatewaySource",
+        "TunnelOutsideIps",
         "Region",
         "AccountAlias",
     ],
@@ -3023,16 +3741,6 @@ SERVICE_COLUMNS: Dict[str, List[str]] = {
         "Region",
         "AccountAlias",
     ],
-    "VPN": [
-        "VpnConnectionId",
-        "Name",
-        "State",
-        "CustomerGateway",
-        "CustomerGatewaySource",
-        "TunnelOutsideIps",
-        "Region",
-        "AccountAlias",
-    ],
 }
 
 UNIQUE_KEYS: Dict[str, Union[str, Tuple[str, ...]]] = {
@@ -3041,10 +3749,12 @@ UNIQUE_KEYS: Dict[str, Union[str, Tuple[str, ...]]] = {
     "Backup": ("PlanId", "RuleName", "SelectionName"),
     "CloudWatchAlarms": "AlarmName",
     "CloudWatchLogs": "LogGroupName",
+    "CostOpportunities": "ResourceId",
     "EC2": "InstanceId",
     "EC2ReservedInstances": "ReservedInstancesId",
     "EventBridge": "ScheduleName",
     "EventBridgeScheduler": "ScheduleName",
+    "Governance": ("Region", "Service"),
     "IAMGroups": "GroupId",
     "IAMPolicies": "PolicyId",
     "IAMRoles": "RoleId",
@@ -3055,20 +3765,24 @@ UNIQUE_KEYS: Dict[str, Union[str, Tuple[str, ...]]] = {
     "RDS": "DBInstanceIdentifier",
     "RDSReservedInstances": "ReservedDBInstanceId",
     "Route53": "Id",
+    "RouteTables": "RouteTableId",
     "S3": "BucketName",
+    "SavingsPlans": "SavingsPlanId",
+    "SecurityGroups": "GroupId",
     "SES": "Identity",
     "SNS": "TopicArn",
-    "SavingsPlans": "SavingsPlanId",
+    "Subnets": "SubnetId",
+    "VPCs": "VpcId",
     "VPN": "VpnConnectionId",
     "WAFClassic": "WebACLId",
     "WAFv2": "WebACLId",
 }
 
 _REGION_SCOPED_SHEETS: set[str] = {
-    "KMS",
     "ACM",
-    "CloudWatchLogs",
     "CloudWatchAlarms",
+    "CloudWatchLogs",
+    "KMS",
     "Lambda",
 }
 
@@ -3268,6 +3982,75 @@ class StreamingExcelWriter:
             raise
 
 
+def parse_cli() -> argparse.Namespace:
+    """Parses command-line arguments for the AWS Inventory Exporter."""
+    parser = argparse.ArgumentParser(
+        description="AWS Inventory Exporter - Canary Version"
+    )
+
+    # --- Arguments for Runner Script Consistency ---
+    parser.add_argument(
+        "-b",
+        "--bucket",
+        help="S3 bucket name (for CLI consistency with runner script, not used).",
+    )
+    parser.add_argument(
+        "-s",
+        "--script",
+        help="S3 script name/key (for CLI consistency with runner script, not used).",
+    )
+
+    # --- Arguments for Controlling the Scan ---
+    parser.add_argument(
+        "--master",
+        action="store_true",
+        help="Run from a management/master account to scan member accounts.",
+    )
+    parser.add_argument(
+        "--exclude-accounts",
+        default="",
+        help="Comma-separated list of account IDs to exclude from the scan.",
+    )
+    parser.add_argument(
+        "--include-accounts",
+        default="",
+        help="Comma-separated list of account IDs to exclusively scan.",
+    )
+    parser.add_argument(
+        "--role-name",
+        default=DEFAULT_ROLE,
+        help=f"IAM role to assume in member accounts (default: {DEFAULT_ROLE}).",
+    )
+    parser.add_argument(
+        "-r",
+        "--regions",
+        help="Comma-separated list of regions to scan (default: all enabled regions).",
+    )
+    parser.add_argument(
+        "--no-excel",
+        action="store_true",
+        help="Disable the generation of the Excel report.",
+    )
+    parser.add_argument(
+        "--include",
+        default="",
+        help="Comma-separated list of collectors to include (e.g., EC2,S3).",
+    )
+    parser.add_argument(
+        "--exclude",
+        default="",
+        help="Comma-separated list of collectors to exclude.",
+    )
+    parser.add_argument(
+        "--scan-mode",
+        choices=["inventory", "security", "cost"],
+        default="inventory",
+        help="Specify the scan mode: full inventory, security-only, or cost-only.",
+    )
+
+    return parser.parse_args()
+
+
 # --------------------------------------------------------------------------
 # ACCOUNT SCAN
 # --------------------------------------------------------------------------
@@ -3278,6 +4061,9 @@ def scan_account(
     include_collectors: Optional[set[str]] = None,
     exclude_collectors: Optional[set[str]] = None,
 ) -> tuple[dict[str, Any], str]:
+    """
+    Scans a single AWS account for resources across specified regions.
+    """
     try:
         aliases = (
             sess.client("iam", region_name="us-east-1")
@@ -3297,6 +4083,11 @@ def scan_account(
         if b_region in buckets_by_region:
             buckets_by_region[b_region].append(b)
 
+    # Fetch supported regions once per account scan.
+    lightsail_supported_regions = get_lightsail_supported_regions(sess, acct_id)
+
+    primary_region = regions[0] if regions else "us-east-1"
+
     global_block: dict[str, Any] = {}
     for sheet, (api, fn) in GLOBAL_SERVICES.items():
         if include_collectors and sheet not in include_collectors:
@@ -3305,12 +4096,21 @@ def scan_account(
             continue
         try:
             client = aws_client(api, "us-east-1", sess)
-            global_block[sheet] = fn(client, alias)
+            result = fn(client, alias)
+
+            if sheet == "IAM":
+                global_block.update(result)
+            else:
+                global_block[sheet] = result
+
         except Exception as exc:
-            logger.error(
-                "Global collector %s failed: %s", sheet, exc, extra={"account": acct_id}
-            )
-            global_block[sheet] = []
+            log("error", f"Global collector {sheet} failed: {exc}", account=acct_id)
+            if sheet == "IAM":
+                global_block.update(
+                    {"IAMUsers": [], "IAMRoles": [], "IAMGroups": [], "IAMPolicies": []}
+                )
+            else:
+                global_block[sheet] = []
 
     if (not include_collectors or "SavingsPlans" in include_collectors) and (
         not exclude_collectors or "SavingsPlans" not in exclude_collectors
@@ -3321,22 +4121,20 @@ def scan_account(
                 sp_client, alias, sess
             )
         except Exception as exc:
-            logger.error(
-                "Global collector SavingsPlans failed: %s",
-                exc,
-                extra={"account": acct_id},
+            log(
+                "error", f"Global collector SavingsPlans failed: {exc}", account=acct_id
             )
             global_block["SavingsPlans"] = []
 
-    def region_worker(region: str) -> tuple[str, dict[str, Any]]:
-        def ec2_collector():
-            return get_ec2_details(
-                aws_client("ec2", region, sess),
-                aws_client("backup", region, sess),
-                alias,
-                sess,
-            )
+    global_block = {k: v for k, v in global_block.items() if v is not None}
 
+    # Update region_worker to accept the supported regions set directly.
+    def region_worker(
+        region: str, supported_ls_regions: set[str]
+    ) -> tuple[str, dict[str, Any]]:
+        is_primary = region == primary_region
+
+        # --- Define unified collector helpers ---
         def s3_collector():
             return get_s3_details(
                 aws_client("s3", region, sess),
@@ -3345,6 +4143,41 @@ def scan_account(
                 region,
                 sess,
             )
+
+        def ec2_collector():
+            return get_ec2_inventory(
+                aws_client("ec2", region, sess),
+                aws_client("backup", region, sess),
+                alias,
+                sess,
+            )
+
+        def rds_collector():
+            return get_rds_inventory(aws_client("rds", region, sess), alias, sess)
+
+        def eventbridge_collector():
+            return get_eventbridge_inventory(
+                aws_client("events", region, sess),
+                aws_client("scheduler", region, sess),
+                alias,
+            )
+
+        def vpc_collector():
+            return get_vpc_inventory(aws_client("ec2", region, sess), alias)
+
+        def cost_collector():
+            return get_cost_opportunities(
+                aws_client("ec2", region, sess),
+                aws_client("s3", region, sess),
+                aws_client("elbv2", region, sess),
+                aws_client("cloudwatch", region, sess),
+                aws_client("lambda", region, sess),
+                aws_client("rds", region, sess),
+                alias,
+            )
+
+        def governance_collector():
+            return get_governance_details(sess, alias, region)
 
         collectors: dict[str, Callable[[], Any]] = {
             "ACM": lambda: get_acm_details(aws_client("acm", region, sess), alias),
@@ -3358,42 +4191,24 @@ def scan_account(
             "CloudWatchLogs": lambda: get_cloudwatch_logs_details(
                 aws_client("logs", region, sess), alias
             ),
+            "CostOpportunities": cost_collector,
             "EC2": ec2_collector,
-            "EC2ReservedInstances": lambda: get_ec2_reserved_instances(
-                aws_client("ec2", region, sess), alias, sess
-            ),
-            "EventBridge": lambda: get_eventbridge_details(
-                aws_client("events", region, sess), alias
-            ),
-            "EventBridgeScheduler": lambda: get_eventbridge_scheduler_details(
-                aws_client("scheduler", region, sess), alias
-            ),
-            "IAMGroups": lambda: get_iam_groups_details(
-                aws_client("iam", region, sess), alias
-            ),
-            "IAMRoles": lambda: get_iam_roles_details(
-                aws_client("iam", region, sess), alias
-            ),
-            "IAMPolicies": lambda: get_iam_policies_details(
-                aws_client("iam", region, sess), alias
-            ),
-            "IAMUsers": lambda: get_iam_users_details(
-                aws_client("iam", region, sess), alias
-            ),
+            "EventBridge": eventbridge_collector,
+            "Governance": governance_collector,
             "KMS": lambda: get_kms_details(aws_client("kms", region, sess), alias),
             "Lambda": lambda: get_lambda_details(
                 aws_client("lambda", region, sess), alias
             ),
-            "Lightsail": lambda: get_lightsail_details(
-                aws_client("lightsail", region, sess), alias
+            "Lightsail": lambda: get_lightsail_inventory(
+                aws_client("lightsail", region, sess),
+                alias,
+                sess,
+                is_primary,
+                supported_ls_regions,
             ),
-            "RDS": lambda: get_rds_details(
-                aws_client("rds", region, sess), alias, sess
-            ),
-            "RDSReservedInstances": lambda: get_rds_reserved_instances(
-                aws_client("rds", region, sess), alias, sess
-            ),
+            "RDS": rds_collector,
             "S3": s3_collector,
+            "VPC": vpc_collector,
             "VPN": lambda: get_vpn_details(aws_client("ec2", region, sess), alias),
             "WAFClassic": lambda: get_waf_classic_details(
                 aws_client("waf-regional", region, sess), alias
@@ -3402,36 +4217,72 @@ def scan_account(
                 aws_client("wafv2", region, sess), alias
             ),
         }
-        collector_keys = set(collectors.keys())
-        filtered = collector_keys
+
+        # --- Smartly handle --include and --exclude for unified collectors ---
+        unified_map = {
+            "EC2": {"EC2", "EC2ReservedInstances"},
+            "RDS": {"RDS", "RDSReservedInstances"},
+            "EventBridge": {"EventBridge", "EventBridgeScheduler"},
+            "VPC": {"VPCs", "Subnets", "RouteTables", "SecurityGroups"},
+            "IAM": {"IAMUsers", "IAMRoles", "IAMGroups", "IAMPolicies"},
+        }
+
+        collectors_to_run_keys = set(collectors.keys())
         if include_collectors:
-            filtered = filtered & include_collectors
+            expanded_includes = set(include_collectors)
+            for key, sub_services in unified_map.items():
+                if key in include_collectors:
+                    expanded_includes.update(sub_services)
+            collectors_to_run_keys &= expanded_includes
+
         if exclude_collectors:
-            filtered = filtered - exclude_collectors
-        collectors_to_run = {k: collectors[k] for k in filtered if k in collectors}
+            expanded_excludes = set(exclude_collectors)
+            for key, sub_services in unified_map.items():
+                if key in exclude_collectors:
+                    expanded_excludes.update(sub_services)
+            collectors_to_run_keys -= expanded_excludes
+
+        collectors_to_run = {
+            k: collectors[k] for k in collectors_to_run_keys if k in collectors
+        }
+
+        # --- Execute selected collectors ---
         region_block: dict[str, Any] = {}
         with ThreadPoolExecutor(max_workers=MAX_TASKS_IN_REGION) as pool:
             futures = {pool.submit(fn): name for name, fn in collectors_to_run.items()}
             for fut in as_completed(futures):
-                sheet = futures[fut]
+                sheet_name = futures[fut]
                 try:
-                    region_block[sheet] = fut.result()
+                    result = fut.result()
+                    # If the collector is unified, its result is a dictionary to be merged.
+                    if sheet_name in unified_map:
+                        region_block.update(result)
+                    else:
+                        region_block[sheet_name] = result
                 except Exception as exc:
-                    logger.error(
-                        "Collector %s in %s failed: %s",
-                        sheet,
-                        region,
-                        exc,
-                        extra={"account": acct_id},
+                    log(
+                        "error",
+                        f"Collector {sheet_name} in {region} failed: {exc}",
+                        account=acct_id,
                     )
-                    region_block[sheet] = []
-        return region, region_block
+                    if sheet_name in unified_map:
+                        region_block.update({k: [] for k in unified_map[sheet_name]})
+                    else:
+                        region_block[sheet_name] = []
 
+        return region, {k: v for k, v in region_block.items() if v is not None}
+
+    # --- Main execution loop for accounts and regions ---
     all_regions: dict[str, Any] = {}
     with ThreadPoolExecutor(
         max_workers=min(len(regions), MAX_REGIONS_IN_FLIGHT)
     ) as pool:
-        for fut in as_completed(pool.submit(region_worker, r) for r in regions):
+        # Pass the supported regions set to each worker thread.
+        futures = {
+            pool.submit(region_worker, r, lightsail_supported_regions): r
+            for r in regions
+        }
+        for fut in as_completed(futures):
             region_name, svc_data = fut.result()
             all_regions[region_name] = svc_data
 
@@ -3440,50 +4291,6 @@ def scan_account(
 
 
 # ────────────────────────────── main CLI ─────────────────────────────
-def parse_cli() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="AWS Inventory Exporter - Release Candidate"
-    )
-    parser.add_argument(
-        "--master",
-        action="store_true",
-        help="Run from management / org-master account. Can be used with --exclude or --include.",
-    )
-    parser.add_argument(
-        "--exclude-accounts",
-        default="",
-        help="Comma-separated list of account IDs to skip from scanning.",
-    )
-    parser.add_argument(
-        "--include-accounts",
-        default="",
-        help="Comma-separated list of account IDs to exclusively scan.",
-    )
-    parser.add_argument(
-        "--role-name",
-        default=DEFAULT_ROLE,
-        help="IAM role to assume in each member account. Default is 'OrganizationAccountAccessRole'.",
-    )
-    parser.add_argument(
-        "--regions",
-        help="Comma-separated list of regions to scan. Default is all regions.",
-    )
-    parser.add_argument(
-        "--no-excel", action="store_true", help="Skip generation of Excel report."
-    )
-    parser.add_argument(
-        "--include",
-        default="",
-        help="Comma-separated list of collectors to include. By default, all collectors are included. Can be used with --master.",
-    )
-    parser.add_argument(
-        "--exclude",
-        default="",
-        help="Comma-separated list of collectors to exclude. Can be used with --master.",
-    )
-    return parser.parse_args()
-
-
 def main() -> None:
     args = parse_cli()
     try:
@@ -3526,8 +4333,54 @@ def main() -> None:
     exclude_accounts = {
         a.strip() for a in args.exclude_accounts.split(",") if a.strip()
     }
-    include_collectors = {c.strip() for c in args.include.split(",") if c.strip()}
+
+    # --- Handle Scan Mode ---
+    user_includes = {c.strip() for c in args.include.split(",") if c.strip()}
+
+    if args.scan_mode == "security":
+        log("info", "Running in SECURITY scan mode.")
+        if not user_includes:
+            include_collectors = {"IAM", "Governance", "SecurityGroups", "VPC"}
+        else:
+            include_collectors = user_includes
+    elif args.scan_mode == "cost":
+        log("info", "Running in COST scan mode.")
+        if not user_includes:
+            include_collectors = {"CostOpportunities", "EC2", "RDS", "SavingsPlans"}
+        else:
+            include_collectors = user_includes
+    else:
+        log("info", "Running in default INVENTORY scan mode.")
+        all_collectors = {
+            "ACM",
+            "ALB",
+            "Backup",
+            "CloudWatchAlarms",
+            "CloudWatchLogs",
+            "EC2",
+            "EventBridge",
+            "KMS",
+            "Lambda",
+            "Lightsail",
+            "RDS",
+            "S3",
+            "VPC",
+            "VPN",
+            "WAFClassic",
+            "WAFv2",
+            "IAM",
+            "SavingsPlans",
+        }
+        include_collectors = all_collectors
+
+        if "CostOpportunities" in user_includes:
+            include_collectors.add("CostOpportunities")
+        if "Governance" in user_includes:
+            include_collectors.add("Governance")
+
     exclude_collectors = {c.strip() for c in args.exclude.split(",") if c.strip()}
+    if exclude_collectors:
+        include_collectors -= exclude_collectors
 
     sessions: Dict[str, boto3.Session] = {}
     if args.master:
@@ -3571,9 +4424,10 @@ def main() -> None:
             writer.record_account(acct_id, alias)
             for region_name, svc_block in region_data.items():
                 for sheet, rows in svc_block.items():
-                    for row in rows:
-                        row["AccountId"] = acct_id
-                        writer.write_row(sheet, row)
+                    if rows is not None:
+                        for row in rows:
+                            row["AccountId"] = acct_id
+                            writer.write_row(sheet, row)
     if writer:
         writer.close()
     logger.info("Done.", extra={"account": "-"})
