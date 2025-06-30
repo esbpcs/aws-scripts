@@ -1,7 +1,17 @@
+# AWS SDK for Python
 boto3
-pandas
-pytz
-croniter
+
+# Used for creating the Excel report
 openpyxl
+
+# Used for safely parsing XML (from VPN configurations)
 defusedxml
+
+# Used for generating human-readable cron descriptions
 cron_descriptor
+
+# Used for getting the local timezone for the report
+tzlocal
+
+# Backport of the zoneinfo library for Python < 3.9
+tzdata
