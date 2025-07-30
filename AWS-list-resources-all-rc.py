@@ -3931,7 +3931,12 @@ class StreamingExcelWriter:
 
     def close(self) -> None:
         ordered = sorted(self.sheets)
-        self.wb._sheets = [self.sheets[n] for n in ordered]
+        for idx, title in enumerate(ordered):
+            ws = self.sheets[title]
+            current_idx = self.wb.sheetnames.index(title)
+            offset = idx - current_idx
+            if offset:
+                self.wb.move_sheet(ws, offset)
 
         # format each data sheet
         for name in ordered:
