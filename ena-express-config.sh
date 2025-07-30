@@ -289,46 +289,6 @@ rollback_network_optimizations() {
 }
 
 #############################################
-# Function: install_persistent_service
-#############################################
-install_persistent_service() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Installing persistent service to reapply optimizations at boot..."
-    cat <<'EOF' >"$PERSISTENT_SERVICE"
-[Unit]
-Description=Reapply ENA Network Optimizations at Boot
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/ena-express-config.sh --apply
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable ena-network-opt-fix.service
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Persistent service ena-network-opt-fix.service installed and enabled."
-}
-
-#############################################
-# Function: remove_persistent_service
-#############################################
-remove_persistent_service() {
-    if systemctl is-enabled ena-network-opt-fix.service &>/dev/null; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - Disabling persistent service ena-network-opt-fix.service..."
-        systemctl disable ena-network-opt-fix.service
-        systemctl stop ena-network-opt-fix.service
-    fi
-    if [ -f "$PERSISTENT_SERVICE" ]; then
-        rm -f "$PERSISTENT_SERVICE"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - Persistent service file removed."
-    fi
-    systemctl daemon-reload
-}
-
-#############################################
 # Main Logic
 #############################################
 case "$MODE" in
