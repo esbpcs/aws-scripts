@@ -667,9 +667,20 @@ def storage_lens_metrics(
         ]
 
         # 1. List all Storage Lens configurations for the account
-        configs = s3control.list_storage_lens_configurations(AccountId=account_id).get(
-            "StorageLensConfigurationList", []
-        )
+        configs = []
+        next_token = None
+        while True:
+            if next_token:
+                resp = s3control.list_storage_lens_configurations(
+                    AccountId=account_id,
+                    NextToken=next_token,
+                )
+            else:
+                resp = s3control.list_storage_lens_configurations(AccountId=account_id)
+            configs.extend(resp.get("StorageLensConfigurationList", []))
+            next_token = resp.get("NextToken")
+            if not next_token:
+                break
         if not configs:
             log("debug", "No S3 Storage Lens configurations found in this account.")
             return None, None

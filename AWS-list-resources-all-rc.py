@@ -735,9 +735,17 @@ def storage_lens_metrics(
     try:
         sl = aws_client("s3control", region, session)
         acct = aws_client("sts", region, session).get_caller_identity()["Account"]
-        cfgs = sl.list_storage_lens_configurations(AccountId=acct).get(
-            "StorageLensConfigurationList", []
-        )
+        cfgs = []
+        nxt = None
+        while True:
+            if nxt:
+                resp = sl.list_storage_lens_configurations(AccountId=acct, NextToken=nxt)
+            else:
+                resp = sl.list_storage_lens_configurations(AccountId=acct)
+            cfgs.extend(resp.get("StorageLensConfigurationList", []))
+            nxt = resp.get("NextToken")
+            if not nxt:
+                break
         if not cfgs:
             return None, None
         cfg = sl.get_storage_lens_configuration(
