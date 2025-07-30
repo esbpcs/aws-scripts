@@ -1978,7 +1978,7 @@ def get_alb_details(elbv2_client: BaseClient, alias: str) -> List[Dict[str, Any]
         )
         for lb in page.get("LoadBalancers", [])
     ]
-    for chunk in (lbs[i : i + 20] for i in range(0, len(lbs), 20)):
+    for chunk in (lbs[i:i + 20] for i in range(0, len(lbs), 20)):
         arns = [lb["LoadBalancerArn"] for lb in chunk]
         tags = _safe_aws_call(
             elbv2_client.describe_tags,
