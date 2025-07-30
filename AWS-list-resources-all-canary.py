@@ -617,9 +617,15 @@ def inventory_metrics(
         if not dest_region:
             return None, None
         s3_dest_client = aws_client("s3", dest_region, session)
-        manifests = s3_dest_client.list_objects_v2(
-            Bucket=dest_bucket, Prefix=f"{prefix}/{bucket}/"
-        ).get("Contents", [])
+        paginator = require_paginator(s3_dest_client, "list_objects_v2")
+        manifests = []
+        for page in _safe_paginator(
+            paginator.paginate,
+            account=alias,
+            Bucket=dest_bucket,
+            Prefix=f"{prefix}/{bucket}/",
+        ):
+            manifests.extend(page.get("Contents", []))
         latest_manifest = max(manifests, key=lambda x: x["LastModified"], default=None)
         if not latest_manifest or not latest_manifest["Key"].endswith("manifest.json"):
             return None, None
@@ -723,9 +729,15 @@ def storage_lens_metrics(
         # 4. Find the latest manifest file in the dynamically discovered location
         # The path is typically /Bucket/AccountId/DashboardId/YYYY-MM-DDTHH-MMZ/manifest.json
         manifest_prefix = f"{export_prefix}{export_account_id}/"
-        manifests = s3_dest_client.list_objects_v2(
-            Bucket=export_bucket, Prefix=manifest_prefix
-        ).get("Contents", [])
+        paginator = require_paginator(s3_dest_client, "list_objects_v2")
+        manifests = []
+        for page in _safe_paginator(
+            paginator.paginate,
+            account=account_id,
+            Bucket=export_bucket,
+            Prefix=manifest_prefix,
+        ):
+            manifests.extend(page.get("Contents", []))
 
         latest_manifest = max(
             (m for m in manifests if m.get("Key", "").endswith("manifest.json")),
