@@ -2946,14 +2946,16 @@ def get_cost_opportunities(
 
     # --- 1. Unattached EBS Volumes ---
     try:
-        volumes = ec2_client.describe_volumes(
-            Filters=[{"Name": "status", "Values": ["available"]}]
-        ).get("Volumes", [])
-        for vol in volumes:
-            out.append(
-                {
-                    "ResourceType": "EBS Volume",
-                    "ResourceId": vol["VolumeId"],
+        for page in _safe_paginator(
+            ec2_client.get_paginator("describe_volumes").paginate,
+            account=alias,
+            Filters=[{"Name": "status", "Values": ["available"]}],
+        ):
+            for vol in page.get("Volumes", []):
+                out.append(
+                    {
+                        "ResourceType": "EBS Volume",
+                        "ResourceId": vol["VolumeId"],
                     "Reason": "Unattached (Available)",
                     "Details": f"Size: {vol['Size']} GiB, Type: {vol['VolumeType']}, Created: {vol['CreateTime'].strftime('%Y-%m-%d')}",
                 }
@@ -3114,14 +3116,16 @@ def get_cost_opportunities(
 
     # --- 6. Underutilized EC2 Instances ---
     try:
-        instances = ec2_client.describe_instances(
-            Filters=[{"Name": "instance-state-name", "Values": ["running"]}]
-        )
-        for reservation in instances.get("Reservations", []):
-            for instance in reservation.get("Instances", []):
-                instance_id = instance["InstanceId"]
-                metrics = cw_client.get_metric_statistics(
-                    Namespace="AWS/EC2",
+        for page in _safe_paginator(
+            ec2_client.get_paginator("describe_instances").paginate,
+            account=alias,
+            Filters=[{"Name": "instance-state-name", "Values": ["running"]}],
+        ):
+            for reservation in page.get("Reservations", []):
+                for instance in reservation.get("Instances", []):
+                    instance_id = instance["InstanceId"]
+                    metrics = cw_client.get_metric_statistics(
+                        Namespace="AWS/EC2",
                     MetricName="CPUUtilization",
                     Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
                     StartTime=fourteen_days_ago,
