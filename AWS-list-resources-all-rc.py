@@ -2457,8 +2457,16 @@ def get_iam_details(
                         UserName=user_name
                     ).get("AttachedPolicies", [])
                 ],
-                "InlinePolicies": iam_client.list_user_policies(UserName=user_name).get(
-                    "PolicyNames", []
+                "InlinePolicies": sorted(
+                    set(
+                        p
+                        for page in _safe_paginator(
+                            require_paginator(iam_client, "list_user_policies").paginate,
+                            account=alias,
+                            UserName=user_name,
+                        )
+                        for p in page.get("PolicyNames", [])
+                    )
                 ),
                 "AccountAlias": alias,
             }
@@ -2496,8 +2504,16 @@ def get_iam_details(
                         RoleName=role_name
                     ).get("AttachedPolicies", [])
                 ],
-                "InlinePolicies": iam_client.list_role_policies(RoleName=role_name).get(
-                    "PolicyNames", []
+                "InlinePolicies": sorted(
+                    set(
+                        p
+                        for page in _safe_paginator(
+                            require_paginator(iam_client, "list_role_policies").paginate,
+                            account=alias,
+                            RoleName=role_name,
+                        )
+                        for p in page.get("PolicyNames", [])
+                    )
                 ),
                 "AccountAlias": alias,
             }
@@ -2522,9 +2538,17 @@ def get_iam_details(
                         GroupName=group_name
                     ).get("AttachedPolicies", [])
                 ],
-                "InlinePolicies": iam_client.list_group_policies(
-                    GroupName=group_name
-                ).get("PolicyNames", []),
+                "InlinePolicies": sorted(
+                    set(
+                        p
+                        for page in _safe_paginator(
+                            require_paginator(iam_client, "list_group_policies").paginate,
+                            account=alias,
+                            GroupName=group_name,
+                        )
+                        for p in page.get("PolicyNames", [])
+                    )
+                ),
                 "Members": [
                     u["UserName"]
                     for u in iam_client.get_group(GroupName=group_name).get("Users", [])
