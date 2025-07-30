@@ -1291,12 +1291,14 @@ def get_cost_opportunities(
 
     # --- 1. Unattached EBS Volumes ---
     try:
-        volumes = ec2_client.describe_volumes(
-            Filters=[{"Name": "status", "Values": ["available"]}]
-        ).get("Volumes", [])
-        for vol in volumes:
-            cost = get_ebs_volume_cost(vol["VolumeType"], vol["Size"], region, session)
-            out.append(
+        for page in _safe_paginator(
+            ec2_client.get_paginator("describe_volumes").paginate,
+            account=alias,
+            Filters=[{"Name": "status", "Values": ["available"]}],
+        ):
+            for vol in page.get("Volumes", []):
+                cost = get_ebs_volume_cost(vol["VolumeType"], vol["Size"], region, session)
+                out.append(
                 {
                     "ResourceType": "EBS Volume",
                     "ResourceId": vol["VolumeId"],
@@ -1425,13 +1427,16 @@ def get_cost_opportunities(
 
     # --- 6. Underutilized EC2 Instances ---
     try:
-        for reservation in ec2_client.describe_instances(
-            Filters=[{"Name": "instance-state-name", "Values": ["running"]}]
-        ).get("Reservations", []):
-            for instance in reservation.get("Instances", []):
-                metrics = cw_client.get_metric_statistics(
-                    Namespace="AWS/EC2",
-                    MetricName="CPUUtilization",
+        for page in _safe_paginator(
+            ec2_client.get_paginator("describe_instances").paginate,
+            account=alias,
+            Filters=[{"Name": "instance-state-name", "Values": ["running"]}],
+        ):
+            for reservation in page.get("Reservations", []):
+                for instance in reservation.get("Instances", []):
+                    metrics = cw_client.get_metric_statistics(
+                        Namespace="AWS/EC2",
+                        MetricName="CPUUtilization",
                     Dimensions=[
                         {"Name": "InstanceId", "Value": instance["InstanceId"]}
                     ],
