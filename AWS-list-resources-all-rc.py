@@ -1994,13 +1994,13 @@ def get_alb_details(elbv2_client: BaseClient, alias: str) -> List[Dict[str, Any]
         for lb in chunk:
             arn = lb["LoadBalancerArn"]
             listeners = [
-                {"Port": l["Port"], "Protocol": l["Protocol"]}
+                {"Port": listener["Port"], "Protocol": listener["Protocol"]}
                 for page in _safe_paginator(
                     elbv2_client.get_paginator("describe_listeners").paginate,
                     account=alias,
                     LoadBalancerArn=arn,
                 )
-                for l in page.get("Listeners", [])
+                for listener in page.get("Listeners", [])
             ]
             tgs = _safe_aws_call(
                 elbv2_client.describe_target_groups,
