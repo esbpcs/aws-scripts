@@ -2043,11 +2043,14 @@ def get_iam_users_details(iam_client: BaseClient, alias: str) -> List[Dict[str, 
             )
             for p in page.get("AttachedPolicies", [])
         ]
-        user["InlinePolicies"] = _safe_aws_call(
-            iam_client.list_user_policies,
-            default={"PolicyNames": []},
+        inline_policies: List[str] = []
+        for page in _safe_paginator(
+            require_paginator(iam_client, "list_user_policies").paginate,
+            account=alias,
             UserName=user_name,
-        ).get("PolicyNames", [])
+        ):
+            inline_policies.extend(page.get("PolicyNames", []))
+        user["InlinePolicies"] = sorted(set(inline_policies))
 
         # Format timestamps
         user["CreateDate"] = to_local(
@@ -2123,11 +2126,14 @@ def get_iam_roles_details(iam_client: BaseClient, alias: str) -> List[Dict[str, 
             )
             for p in page.get("AttachedPolicies", [])
         ]
-        role["InlinePolicies"] = _safe_aws_call(
-            iam_client.list_role_policies,
-            default={"PolicyNames": []},
+        inline_policies = []
+        for page in _safe_paginator(
+            require_paginator(iam_client, "list_role_policies").paginate,
+            account=alias,
             RoleName=role_name,
-        ).get("PolicyNames", [])
+        ):
+            inline_policies.extend(page.get("PolicyNames", []))
+        role["InlinePolicies"] = sorted(set(inline_policies))
 
         # Format timestamp
         role["CreateDate"] = to_local(
@@ -2163,11 +2169,14 @@ def get_iam_groups_details(iam_client: BaseClient, alias: str) -> List[Dict[str,
             )
             for p in page.get("AttachedPolicies", [])
         ]
-        group["InlinePolicies"] = _safe_aws_call(
-            iam_client.list_group_policies,
-            default={"PolicyNames": []},
+        inline_policies = []
+        for page in _safe_paginator(
+            require_paginator(iam_client, "list_group_policies").paginate,
+            account=alias,
             GroupName=group_name,
-        ).get("PolicyNames", [])
+        ):
+            inline_policies.extend(page.get("PolicyNames", []))
+        group["InlinePolicies"] = sorted(set(inline_policies))
 
         # Format timestamp
         group["CreateDate"] = to_local(
