@@ -120,17 +120,22 @@ REGION_TZ: Dict[str, str] = {
     "eu-central-1": "Europe/Berlin",
     "eu-central-2": "Europe/Zurich",
     "eu-south-1": "Europe/Rome",
+    "eu-south-2": "Europe/Madrid",
     "ap-south-1": "Asia/Kolkata",
+    "ap-south-2": "Asia/Kolkata",
     "ap-northeast-1": "Asia/Tokyo",
     "ap-northeast-2": "Asia/Seoul",
     "ap-northeast-3": "Asia/Tokyo",
     "ap-southeast-1": "Asia/Singapore",
     "ap-southeast-2": "Australia/Sydney",
     "ap-southeast-3": "Asia/Jakarta",
+    "ap-southeast-4": "Australia/Melbourne",
     "ap-east-1": "Asia/Hong_Kong",
     "me-south-1": "Asia/Bahrain",
     "me-central-1": "Asia/Dubai",
     "af-south-1": "Africa/Johannesburg",
+    "af-north-1": "Africa/Cairo",
+    "il-central-1": "Asia/Jerusalem",
 }
 
 # --- Load External Configuration ---
