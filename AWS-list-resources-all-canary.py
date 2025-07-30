@@ -989,13 +989,13 @@ def get_alb_details(
 
         # Get Listeners associated with the load balancer.
         listeners = [
-            {"Port": l.get("Port"), "Protocol": l.get("Protocol")}
+            {"Port": listener.get("Port"), "Protocol": listener.get("Protocol")}
             for page in _safe_paginator(
                 elbv2_client.get_paginator("describe_listeners").paginate,
                 account=alias,
                 LoadBalancerArn=arn,
             )
-            for l in page.get("Listeners", [])
+            for listener in page.get("Listeners", [])
         ]
 
         # Get Target Groups associated with the load balancer.
