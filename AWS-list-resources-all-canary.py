@@ -1267,13 +1267,14 @@ def get_cloudwatch_logs_details(
         if not log_group_name:
             continue
 
-        # For each log group, get the count of associated metric filters.
-        metric_filters = _safe_aws_call(
-            logs_client.describe_metric_filters,
-            default={"metricFilters": []},
+        # For each log group, collect all associated metric filters.
+        metric_filters: List[Dict[str, Any]] = []
+        for page in _safe_paginator(
+            require_paginator(logs_client, "describe_metric_filters").paginate,
             account=alias,
             logGroupName=log_group_name,
-        )["metricFilters"]
+        ):
+            metric_filters.extend(page.get("metricFilters", []))
 
         # Build a new dictionary safely to prevent KeyErrors and ensure data integrity.
         out.append(
