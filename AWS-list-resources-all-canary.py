@@ -1998,19 +1998,21 @@ def get_iam_users_details(iam_client: BaseClient, alias: str) -> List[Dict[str, 
         # Enrich with associated groups and policies
         user["Groups"] = [
             g["GroupName"]
-            for g in _safe_aws_call(
-                iam_client.list_groups_for_user,
-                default={"Groups": []},
+            for page in _safe_paginator(
+                iam_client.get_paginator("list_groups_for_user").paginate,
+                account=alias,
                 UserName=user_name,
-            ).get("Groups", [])
+            )
+            for g in page.get("Groups", [])
         ]
         user["AttachedPolicies"] = [
             p["PolicyArn"]
-            for p in _safe_aws_call(
-                iam_client.list_attached_user_policies,
-                default={"AttachedPolicies": []},
+            for page in _safe_paginator(
+                iam_client.get_paginator("list_attached_user_policies").paginate,
+                account=alias,
                 UserName=user_name,
-            ).get("AttachedPolicies", [])
+            )
+            for p in page.get("AttachedPolicies", [])
         ]
         user["InlinePolicies"] = _safe_aws_call(
             iam_client.list_user_policies,
@@ -2059,11 +2061,12 @@ def get_iam_roles_details(iam_client: BaseClient, alias: str) -> List[Dict[str, 
         # Enrich with attached and inline policies
         role["AttachedPolicies"] = [
             p["PolicyArn"]
-            for p in _safe_aws_call(
-                iam_client.list_attached_role_policies,
-                default={"AttachedPolicies": []},
+            for page in _safe_paginator(
+                iam_client.get_paginator("list_attached_role_policies").paginate,
+                account=alias,
                 RoleName=role_name,
-            ).get("AttachedPolicies", [])
+            )
+            for p in page.get("AttachedPolicies", [])
         ]
         role["InlinePolicies"] = _safe_aws_call(
             iam_client.list_role_policies,
@@ -2098,11 +2101,12 @@ def get_iam_groups_details(iam_client: BaseClient, alias: str) -> List[Dict[str,
         ]
         group["AttachedPolicies"] = [
             p["PolicyArn"]
-            for p in _safe_aws_call(
-                iam_client.list_attached_group_policies,
-                default={"AttachedPolicies": []},
+            for page in _safe_paginator(
+                iam_client.get_paginator("list_attached_group_policies").paginate,
+                account=alias,
                 GroupName=group_name,
-            ).get("AttachedPolicies", [])
+            )
+            for p in page.get("AttachedPolicies", [])
         ]
         group["InlinePolicies"] = _safe_aws_call(
             iam_client.list_group_policies,
@@ -2151,9 +2155,15 @@ def get_iam_policies_details(
                 )  # Handle cases where version info is not available
 
             # Get all entities (users, roles, groups) the policy is attached to.
-            entities = _safe_aws_call(
-                iam_client.list_entities_for_policy, default={}, PolicyArn=policy["Arn"]
-            )
+            entities = {"PolicyUsers": [], "PolicyRoles": [], "PolicyGroups": []}
+            for page in _safe_paginator(
+                iam_client.get_paginator("list_entities_for_policy").paginate,
+                account=alias,
+                PolicyArn=policy["Arn"],
+            ):
+                entities["PolicyUsers"].extend(page.get("PolicyUsers", []))
+                entities["PolicyRoles"].extend(page.get("PolicyRoles", []))
+                entities["PolicyGroups"].extend(page.get("PolicyGroups", []))
             policy["AttachmentEntities"] = (
                 [
                     {"Type": "User", "Name": e["UserName"]}
