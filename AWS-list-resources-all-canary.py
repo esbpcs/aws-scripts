@@ -2070,22 +2070,48 @@ def get_iam_roles_details(iam_client: BaseClient, alias: str) -> List[Dict[str, 
     for role in roles:
         role_name = role["RoleName"]
 
-        # Correctly parse the trust policy and collect all Service Principals
+        # Correctly parse the trust policy and collect all principals
         trust_policy = role.get("AssumeRolePolicyDocument", {})
         statements = trust_policy.get("Statement", [])
         if isinstance(statements, dict):
             statements = [statements]
 
         service_principals: Set[str] = set()
+        account_principals: Set[str] = set()
+        federated_principals: Set[str] = set()
+
         for stmt in statements:
             principals = stmt.get("Principal", {})
+            if principals == "*":
+                account_principals.add("*")
+                continue
+            if isinstance(principals, str):
+                account_principals.add(principals)
+                continue
             services = principals.get("Service", [])
+            aws_accounts = principals.get("AWS", [])
+            federated = principals.get("Federated", [])
+
             if isinstance(services, str):
                 service_principals.add(services)
             else:
                 service_principals.update(services)
 
-        role["ServicePrincipals"] = sorted(service_principals)
+            if isinstance(aws_accounts, str):
+                account_principals.add(aws_accounts)
+            else:
+                account_principals.update(aws_accounts)
+
+            if isinstance(federated, str):
+                federated_principals.add(federated)
+            else:
+                federated_principals.update(federated)
+
+        all_principals = service_principals | account_principals | federated_principals
+
+        role["ServicePrincipals"] = sorted(all_principals)
+        role["AccountPrincipals"] = sorted(account_principals)
+        role["FederatedPrincipals"] = sorted(federated_principals)
 
         # Enrich with attached and inline policies
         role["AttachedPolicies"] = [
@@ -2253,7 +2279,11 @@ def get_iam_summary_details(
                 "CreateDate": role.get("CreateDate"),
                 "AttachedPoliciesCount": len(role.get("AttachedPolicies", [])),
                 "InlinePoliciesCount": len(role.get("InlinePolicies", [])),
-                "Details": f"Service Principals: {role.get('ServicePrincipals', [])}",
+                "Details": (
+                    f"Service Principals: {role.get('ServicePrincipals', [])}; "
+                    f"Account Principals: {role.get('AccountPrincipals', [])}; "
+                    f"Federated Principals: {role.get('FederatedPrincipals', [])}"
+                ),
                 "AccountAlias": alias,
             }
         )
