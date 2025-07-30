@@ -3734,10 +3734,15 @@ class StreamingExcelWriter:
             ws.freeze_panes = ws[f"A{header_row + 1}"]
 
         # Reorder sheets to ensure Summary is first, followed by others alphabetically
-        self.wb._sheets = sorted(
-            self.wb._sheets,
-            key=lambda s: (0, s.title) if s.title == "Summary" else (1, s.title),
+        desired_order = ["Summary"] + sorted(
+            [title for title in self.wb.sheetnames if title != "Summary"]
         )
+        for idx, title in enumerate(desired_order):
+            ws = self.wb[title]
+            current_idx = self.wb.sheetnames.index(title)
+            offset = idx - current_idx
+            if offset:
+                self.wb.move_sheet(ws, offset)
         self.wb.active = 0
 
         try:
