@@ -2951,9 +2951,8 @@ def get_savings_plan_details(
     # The API defaults to 'active' only. We include 'retired' to get a complete history.
     savings_plan_ids = [
         sp["savingsPlanId"]
-        for sp in _safe_aws_call(
-            sp_client.describe_savings_plans, default={"savingsPlans": []}
-        ).get("savingsPlans", [])
+        for page in require_paginator(sp_client, "describe_savings_plans").paginate()
+        for sp in page.get("savingsPlans", [])
     ]
 
     if not savings_plan_ids:
