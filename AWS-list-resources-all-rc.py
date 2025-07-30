@@ -2471,16 +2471,35 @@ def get_iam_details(
         for role in page.get("Roles", []):
             role_name = role["RoleName"]
             trust_policy = role.get("AssumeRolePolicyDocument", {})
-            service_principals = []
+            service_principals: set[str] = set()
+            account_principals: set[str] = set()
+            federated_principals: set[str] = set()
             if trust_policy:
                 for stmt in trust_policy.get("Statement", []):
                     principal = stmt.get("Principal", {})
+                    if principal == "*":
+                        account_principals.add("*")
+                        continue
+                    if isinstance(principal, str):
+                        account_principals.add(principal)
+                        continue
                     if "Service" in principal:
-                        service_principals.extend(
-                            principal["Service"]
-                            if isinstance(principal["Service"], list)
-                            else [principal["Service"]]
+                        services = principal["Service"]
+                        service_principals.update(
+                            services if isinstance(services, list) else [services]
                         )
+                    if "AWS" in principal:
+                        aws_accounts = principal["AWS"]
+                        account_principals.update(
+                            aws_accounts if isinstance(aws_accounts, list) else [aws_accounts]
+                        )
+                    if "Federated" in principal:
+                        federated = principal["Federated"]
+                        federated_principals.update(
+                            federated if isinstance(federated, list) else [federated]
+                        )
+
+            all_principals = service_principals | account_principals | federated_principals
 
             role_summary = {
                 "RoleName": role_name,
@@ -2489,7 +2508,9 @@ def get_iam_details(
                 "CreateDate": to_local(
                     role.get("CreateDate"), iam_client.meta.region_name
                 ),
-                "ServicePrincipals": service_principals,
+                "ServicePrincipals": sorted(all_principals),
+                "AccountPrincipals": sorted(account_principals),
+                "FederatedPrincipals": sorted(federated_principals),
                 "AttachedPolicies": [
                     p["PolicyArn"]
                     for p in iam_client.list_attached_role_policies(
@@ -3514,6 +3535,8 @@ SERVICE_COLUMNS: Dict[str, List[str]] = {
         "Arn",
         "CreateDate",
         "ServicePrincipals",
+        "AccountPrincipals",
+        "FederatedPrincipals",
         "AttachedPolicies",
         "InlinePolicies",
         "AccountAlias",

@@ -187,6 +187,8 @@
             "Arn",
             "CreateDate",
             "ServicePrincipals",
+            "AccountPrincipals",
+            "FederatedPrincipals",
             "AttachedPolicies",
             "InlinePolicies",
             "AccountAlias"
