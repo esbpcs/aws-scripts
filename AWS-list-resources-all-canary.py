@@ -43,6 +43,7 @@ from xml.sax.saxutils import unescape
 
 import boto3
 from botocore.client import BaseClient
+from botocore.paginate import Paginator
 from botocore.config import Config
 from botocore.exceptions import (
     ClientError,
@@ -333,6 +334,15 @@ def _safe_paginator(
         log("warning", f"Paginator aborted: {exc}", account=account)
 
 
+def require_paginator(client: BaseClient, op: str) -> Paginator:
+    """Return a paginator or raise if the operation can't be paginated."""
+    if not client.can_paginate(op):
+        raise RuntimeError(
+            f"{client.meta.service_model.service_name} cannot paginate '{op}'"
+        )
+    return client.get_paginator(op)
+
+
 _TIMEZONE_OFFSET_RE = re.compile(r"([+-]\d{2})(\d{2})$")
 
 
@@ -512,7 +522,9 @@ def get_aws_resource_details(
     """A generic function to list AWS resources using a paginator."""
     out = []
     for page in _safe_paginator(
-        client.get_paginator(paginator_name).paginate, account=alias, **paginator_kwargs
+        require_paginator(client, paginator_name).paginate,
+        account=alias,
+        **paginator_kwargs,
     ):
         for item in page.get(list_key, []):
             item.update({"AccountAlias": alias, "Region": client.meta.region_name})
@@ -996,7 +1008,7 @@ def get_alb_details(
         listeners = [
             {"Port": listener.get("Port"), "Protocol": listener.get("Protocol")}
             for page in _safe_paginator(
-                elbv2_client.get_paginator("describe_listeners").paginate,
+                require_paginator(elbv2_client, "describe_listeners").paginate,
                 account=alias,
                 LoadBalancerArn=arn,
             )
@@ -1172,7 +1184,7 @@ def get_cloudwatch_alarms_details(
 
     # The describe_alarms paginator efficiently returns both alarm types.
     for page in _safe_paginator(
-        cw_client.get_paginator("describe_alarms").paginate, account=alias
+        require_paginator(cw_client, "describe_alarms").paginate, account=alias
     ):
         # --- Process Metric Alarms ---
         for alarm in page.get("MetricAlarms", []):
@@ -1297,7 +1309,7 @@ def get_cost_opportunities(
     # --- 1. Unattached EBS Volumes ---
     try:
         for page in _safe_paginator(
-            ec2_client.get_paginator("describe_volumes").paginate,
+            require_paginator(ec2_client, "describe_volumes").paginate,
             account=alias,
             Filters=[{"Name": "status", "Values": ["available"]}],
         ):
@@ -1378,7 +1390,7 @@ def get_cost_opportunities(
     # --- 4. Old EBS Snapshots ---
     try:
         snapshot_cost_per_gb = get_ebs_volume_cost("gp2.snapshot", 1, region, session)
-        for page in ec2_client.get_paginator("describe_snapshots").paginate(
+        for page in require_paginator(ec2_client, "describe_snapshots").paginate(
             OwnerIds=["self"]
         ):
             for snap in page.get("Snapshots", []):
@@ -1409,7 +1421,7 @@ def get_cost_opportunities(
     # --- 5. S3 Incomplete Multipart Uploads ---
     try:
         for bucket in s3_client.list_buckets().get("Buckets", []):
-            for mpu_page in s3_client.get_paginator("list_multipart_uploads").paginate(
+            for mpu_page in require_paginator(s3_client, "list_multipart_uploads").paginate(
                 Bucket=bucket["Name"]
             ):
                 for upload in mpu_page.get("Uploads", []):
@@ -1433,7 +1445,7 @@ def get_cost_opportunities(
     # --- 6. Underutilized EC2 Instances ---
     try:
         for page in _safe_paginator(
-            ec2_client.get_paginator("describe_instances").paginate,
+            require_paginator(ec2_client, "describe_instances").paginate,
             account=alias,
             Filters=[{"Name": "instance-state-name", "Values": ["running"]}],
         ):
@@ -1491,7 +1503,7 @@ def get_ec2_details(
     instances = [
         inst
         for page in _safe_paginator(
-            ec2_client.get_paginator("describe_instances").paginate, account=alias
+            require_paginator(ec2_client, "describe_instances").paginate, account=alias
         )
         for r in page.get("Reservations", [])
         for inst in r.get("Instances", [])
@@ -1533,7 +1545,8 @@ def get_ec2_details(
     prot_i, prot_v, plan_i, plan_v = set(), set(), set(), set()
     all_i = all_v = False
     for page in _safe_paginator(
-        backup_client.get_paginator("list_protected_resources").paginate, account=alias
+        require_paginator(backup_client, "list_protected_resources").paginate,
+        account=alias,
     ):
         for r in page.get("Results", []):
             arn = r.get("ResourceArn", "")
@@ -1728,7 +1741,7 @@ def get_eventbridge_scheduler_details(
     groups = {"default"} | {
         g["Name"]
         for page in _safe_paginator(
-            scheduler_client.get_paginator("list_schedule_groups").paginate,
+            require_paginator(scheduler_client, "list_schedule_groups").paginate,
             account=alias,
         )
         for g in page.get("ScheduleGroups", [])
@@ -2286,7 +2299,7 @@ def get_kms_details(
             tags_list = [
                 t
                 for page in _safe_paginator(
-                    kms_client.get_paginator("list_resource_tags").paginate,
+                    require_paginator(kms_client, "list_resource_tags").paginate,
                     account=alias,
                     KeyId=key_id,
                 )
@@ -2301,7 +2314,7 @@ def get_kms_details(
         meta["AliasNames"] = [
             a["AliasName"]
             for page in _safe_paginator(
-                kms_client.get_paginator("list_aliases").paginate,
+                require_paginator(kms_client, "list_aliases").paginate,
                 account=alias,
                 KeyId=key_id,
             )
@@ -2312,7 +2325,7 @@ def get_kms_details(
         meta["GrantsCount"] = sum(
             len(p.get("Grants", []))
             for p in _safe_paginator(
-                kms_client.get_paginator("list_grants").paginate,
+                require_paginator(kms_client, "list_grants").paginate,
                 account=alias,
                 KeyId=key_id,
             )
@@ -2350,12 +2363,12 @@ def get_lightsail_inventory(
     try:
         # Fetch Instance and Database Bundles
         for page in _safe_paginator(
-            ls_client.get_paginator("get_bundles").paginate, account=alias
+            require_paginator(ls_client, "get_bundles").paginate, account=alias
         ):
             for bundle in page.get("bundles", []):
                 bundle_specs[bundle["bundleId"]] = bundle
         for page in _safe_paginator(
-            ls_client.get_paginator("get_relational_database_bundles").paginate,
+            require_paginator(ls_client, "get_relational_database_bundles").paginate,
             account=alias,
         ):
             for bundle in page.get("bundles", []):
@@ -2611,7 +2624,7 @@ def get_route53_details(
 
             record_types, health_checks = set(), set()
             for page in _safe_paginator(
-                r53_client.get_paginator("list_resource_record_sets").paginate,
+                require_paginator(r53_client, "list_resource_record_sets").paginate,
                 account=alias,
                 HostedZoneId=zid,
             ):
@@ -2687,7 +2700,7 @@ def get_s3_details(
     metric_results: List[Dict[str, Any]] = []
     for chunk in chunked(metric_queries, 500):
         for page in _safe_paginator(
-            cw_client.get_paginator("get_metric_data").paginate,
+            require_paginator(cw_client, "get_metric_data").paginate,
             account=alias,
             MetricDataQueries=chunk,
             StartTime=(now - timedelta(hours=_METRIC_OFFSET + 2)),
@@ -2720,7 +2733,7 @@ def get_s3_details(
             try:
                 partial_scan = False
                 temp_size, temp_count = 0, 0
-                paginator = s3_client.get_paginator("list_objects_v2")
+                paginator = require_paginator(s3_client, "list_objects_v2")
                 for page in _safe_paginator(
                     paginator.paginate, account=alias, Bucket=name
                 ):
@@ -2986,7 +2999,7 @@ def get_sns_details(
         subscriptions = [
             f"{s.get('Protocol','')}://{s.get('Endpoint','')}"
             for page in _safe_paginator(
-                sns_client.get_paginator("list_subscriptions_by_topic").paginate,
+                require_paginator(sns_client, "list_subscriptions_by_topic").paginate,
                 account=alias,
                 TopicArn=arn,
             )
@@ -3849,7 +3862,7 @@ def main() -> None:
         org_client = base_session.client("organizations", config=RETRY_CONFIG)
         accounts = [
             a
-            for page in org_client.get_paginator("list_accounts").paginate()
+            for page in require_paginator(org_client, "list_accounts").paginate()
             for a in page.get("Accounts", [])
             if a.get("Status") == "ACTIVE"
         ]
