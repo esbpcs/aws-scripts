@@ -2034,10 +2034,22 @@ def get_iam_roles_details(iam_client: BaseClient, alias: str) -> List[Dict[str, 
     for role in roles:
         role_name = role["RoleName"]
 
-        # Correctly parse the trust policy to add ServicePrincipals
+        # Correctly parse the trust policy and collect all Service Principals
         trust_policy = role.get("AssumeRolePolicyDocument", {})
-        principals = trust_policy.get("Statement", [{}])[0].get("Principal", {})
-        role["ServicePrincipals"] = principals.get("Service", [])
+        statements = trust_policy.get("Statement", [])
+        if isinstance(statements, dict):
+            statements = [statements]
+
+        service_principals: Set[str] = set()
+        for stmt in statements:
+            principals = stmt.get("Principal", {})
+            services = principals.get("Service", [])
+            if isinstance(services, str):
+                service_principals.add(services)
+            else:
+                service_principals.update(services)
+
+        role["ServicePrincipals"] = sorted(service_principals)
 
         # Enrich with attached and inline policies
         role["AttachedPolicies"] = [
