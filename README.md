@@ -68,4 +68,4 @@ sudo ./ena-express-config.sh --revert
 
 ### 4\. Dependencies
 
-- **`Dependencies/Requirements.txt`**: A text file containing the Python packages required by the `AWS-list-resources-all-*.py` scripts. The primary dependencies are `boto3`, `pandas`, `openpyxl`, and `pytz`.
+- **`Dependencies/Requirements.txt`**: A text file containing the Python packages required by the `AWS-list-resources-all-*.py` scripts. These packages include `boto3`, `openpyxl`, `defusedxml`, `cron_descriptor`, `tzlocal`, and `tzdata`.
