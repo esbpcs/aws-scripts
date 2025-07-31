@@ -3026,7 +3026,9 @@ def get_cost_opportunities(
 
     # --- 2. Unassociated Elastic IPs ---
     try:
-        addresses = ec2_client.describe_addresses().get("Addresses", [])
+        addresses = _safe_aws_call(
+            ec2_client.describe_addresses, default={"Addresses": []}, account=alias
+        ).get("Addresses", [])
         for addr in addresses:
             if "AssociationId" not in addr:
                 out.append(
