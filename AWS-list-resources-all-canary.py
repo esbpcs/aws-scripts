@@ -1360,22 +1360,24 @@ def get_cost_opportunities(
     # --- 2. Unassociated Elastic IPs ---
     try:
         eip_monthly_cost = get_eip_cost(region, session)
-        for page in require_paginator(ec2_client, "describe_addresses").paginate():
-            for addr in page.get("Addresses", []):
-                if "AssociationId" not in addr:
-                    out.append(
-                        {
-                            "ResourceType": "Elastic IP",
-                            "ResourceId": addr["PublicIp"],
-                            "Reason": "Unassociated",
-                            "Details": f"AllocationId: {addr['AllocationId']}",
-                            "EstimatedMonthlySavings": (
-                                f"${eip_monthly_cost:.2f}"
-                                if eip_monthly_cost is not None
-                                else "N/A"
-                            ),
-                        }
-                    )
+        addresses = _safe_aws_call(
+            ec2_client.describe_addresses, default={"Addresses": []}, account=alias
+        ).get("Addresses", [])
+        for addr in addresses:
+            if "AssociationId" not in addr:
+                out.append(
+                    {
+                        "ResourceType": "Elastic IP",
+                        "ResourceId": addr["PublicIp"],
+                        "Reason": "Unassociated",
+                        "Details": f"AllocationId: {addr['AllocationId']}",
+                        "EstimatedMonthlySavings": (
+                            f"${eip_monthly_cost:.2f}"
+                            if eip_monthly_cost is not None
+                            else "N/A"
+                        ),
+                    }
+                )
     except Exception as e:
         log(
             "warning",
