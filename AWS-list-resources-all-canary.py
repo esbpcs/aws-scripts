@@ -1714,10 +1714,16 @@ def get_eventbridge_details(
     """Collects details for EventBridge (CloudWatch Events) rules."""
     out: List[Dict[str, Any]] = []
 
-    # list_event_buses is not paginated.
-    buses = _safe_aws_call(
-        events_client.list_event_buses, default={"EventBuses": []}, account=alias
-    ).get("EventBuses", [])
+    # list_event_buses is technically not paginated, but use a paginator to
+    # support possible future pagination and keep the interface consistent.
+    buses = [
+        b
+        for page in _safe_paginator(
+            require_paginator(events_client, "list_event_buses").paginate,
+            account=alias,
+        )
+        for b in page.get("EventBuses", [])
+    ]
 
     for bus in buses:
         bus_name = bus.get("Name", "")
@@ -1735,13 +1741,16 @@ def get_eventbridge_details(
                 continue
 
             # Correctly call list_targets_by_rule to get target details.
-            targets = _safe_aws_call(
-                events_client.list_targets_by_rule,
-                default={"Targets": []},
-                account=alias,
-                Rule=rule["Name"],
-                EventBusName=bus_name,
-            )["Targets"]
+            targets = [
+                t
+                for page in _safe_paginator(
+                    require_paginator(events_client, "list_targets_by_rule").paginate,
+                    account=alias,
+                    Rule=rule["Name"],
+                    EventBusName=bus_name,
+                )
+                for t in page.get("Targets", [])
+            ]
             first_target = targets[0] if targets else {}
 
             freq, details = humanise_schedule(expr)
