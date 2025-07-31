@@ -1948,7 +1948,9 @@ def get_governance_details(
                 client.describe_hub()
                 status = "Enabled"
             elif service_name == "GuardDuty":
-                detectors = client.list_detectors().get("DetectorIds", [])
+                detectors: List[str] = []
+                for page in require_paginator(client, "list_detectors").paginate():
+                    detectors.extend(page.get("DetectorIds", []))
                 status = "Not Found"
                 if detectors:
                     status = (
@@ -1980,12 +1982,16 @@ def get_governance_details(
                 status = session_info.get("status", "UNKNOWN").title()
                 details = f"Service Role: {session_info.get('serviceRole')}"
             elif service_name == "IAM Access Analyzer":
-                analyzers = client.list_analyzers(type="ACCOUNT").get("analyzers", [])
+                analyzers: List[Dict[str, Any]] = []
+                for page in require_paginator(client, "list_analyzers").paginate(type="ACCOUNT"):
+                    analyzers.extend(page.get("analyzers", []))
                 status = "Enabled" if analyzers else "Not Enabled"
                 if analyzers:
                     details = f"Analyzers found: {[a.get('name') for a in analyzers]}"
             elif service_name == "Amazon Detective":
-                graphs = client.list_graphs().get("GraphList", [])
+                graphs: List[Dict[str, Any]] = []
+                for page in require_paginator(client, "list_graphs").paginate():
+                    graphs.extend(page.get("GraphList", []))
                 status = "Enabled" if graphs else "Not Enabled"
                 if graphs:
                     details = f"Graph ARN: {graphs[0].get('Arn')}"
