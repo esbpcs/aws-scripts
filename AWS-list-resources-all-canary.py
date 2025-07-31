@@ -1041,12 +1041,12 @@ def get_alb_details(
         # Get Target Groups associated with the load balancer.
         target_groups = [
             tg.get("TargetGroupName")
-            for tg in _safe_aws_call(
-                elbv2_client.describe_target_groups,
-                default={"TargetGroups": []},
+            for page in _safe_paginator(
+                require_paginator(elbv2_client, "describe_target_groups").paginate,
                 account=alias,
                 LoadBalancerArn=arn,
-            ).get("TargetGroups", [])
+            )
+            for tg in page.get("TargetGroups", [])
         ]
 
         # Assemble the final record for the report.
