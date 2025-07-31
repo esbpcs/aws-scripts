@@ -1080,34 +1080,34 @@ def get_backup_details(
     out: List[Dict[str, Any]] = []
 
     # List all backup plans in the region.
-    plans = get_aws_resource_details(
-        client=backup_client,
-        paginator_name="list_backup_plans",
-        list_key="BackupPlansList",
-        alias=alias,
-    )
+    for plan_page in _safe_paginator(
+        require_paginator(backup_client, "list_backup_plans").paginate,
+        account=alias,
+    ):
+        for summary in plan_page.get("BackupPlansList", []):
+            pid, vid = summary["BackupPlanId"], summary["VersionId"]
 
-    for summary in plans:
-        pid, vid = summary["BackupPlanId"], summary["VersionId"]
+            # Get the full details for each backup plan.
+            plan = _safe_aws_call(
+                backup_client.get_backup_plan,
+                default={"BackupPlan": {}},
+                account=alias,
+                BackupPlanId=pid,
+                VersionId=vid,
+            )["BackupPlan"]
+            if not plan:
+                continue
 
-        # Get the full details for each backup plan.
-        plan = _safe_aws_call(
-            backup_client.get_backup_plan,
-            default={"BackupPlan": {}},
-            account=alias,
-            BackupPlanId=pid,
-            VersionId=vid,
-        )["BackupPlan"]
-        if not plan:
-            continue
-
-        # Get all backup selections associated with the plan.
-        selections = _safe_aws_call(
-            backup_client.list_backup_selections,
-            default={"BackupSelectionsList": []},
-            account=alias,
-            BackupPlanId=pid,
-        )["BackupSelectionsList"]
+            # Get all backup selections associated with the plan.
+            selections = [
+                sel
+                for sel_page in _safe_paginator(
+                    require_paginator(backup_client, "list_backup_selections").paginate,
+                    account=alias,
+                    BackupPlanId=pid,
+                )
+                for sel in sel_page.get("BackupSelectionsList", [])
+            ]
 
         # Process each rule within the backup plan.
         for rule in plan.get("Rules", []):
@@ -1592,31 +1592,33 @@ def get_ec2_details(
             elif arn.endswith("/volume/*"):
                 all_v = True
 
-    for p in _safe_aws_call(
-        backup_client.list_backup_plans, default={"BackupPlansList": []}, account=alias
-    )["BackupPlansList"]:
-        for sel in _safe_aws_call(
-            backup_client.list_backup_selections,
-            default={"BackupSelectionsList": []},
-            account=alias,
-            BackupPlanId=p["BackupPlanId"],
-        )["BackupSelectionsList"]:
-            cfg = _safe_aws_call(
-                backup_client.get_backup_selection,
-                default={"BackupSelection": {}},
+    for plan_page in _safe_paginator(
+        require_paginator(backup_client, "list_backup_plans").paginate,
+        account=alias,
+    ):
+        for p in plan_page.get("BackupPlansList", []):
+            for sel_page in _safe_paginator(
+                require_paginator(backup_client, "list_backup_selections").paginate,
                 account=alias,
                 BackupPlanId=p["BackupPlanId"],
-                SelectionId=sel["SelectionId"],
-            )["BackupSelection"]
-            for arn in cfg.get("Resources", []):
-                if ":instance/" in arn:
-                    plan_i.add(arn.rsplit("/", 1)[-1])
-                elif ":volume/" in arn:
-                    plan_v.add(arn.rsplit("/", 1)[-1])
-                elif arn.endswith("/instance/*"):
-                    all_i = True
-                elif arn.endswith("/volume/*"):
-                    all_v = True
+            ):
+                for sel in sel_page.get("BackupSelectionsList", []):
+                    cfg = _safe_aws_call(
+                        backup_client.get_backup_selection,
+                        default={"BackupSelection": {}},
+                        account=alias,
+                        BackupPlanId=p["BackupPlanId"],
+                        SelectionId=sel["SelectionId"],
+                    )["BackupSelection"]
+                    for arn in cfg.get("Resources", []):
+                        if ":instance/" in arn:
+                            plan_i.add(arn.rsplit("/", 1)[-1])
+                        elif ":volume/" in arn:
+                            plan_v.add(arn.rsplit("/", 1)[-1])
+                        elif arn.endswith("/instance/*"):
+                            all_i = True
+                        elif arn.endswith("/volume/*"):
+                            all_v = True
 
     # Assemble the final data for each instance
     for inst in instances:
