@@ -2969,11 +2969,22 @@ def get_savings_plan_details(
 
     # Explicitly request plans in all states to ensure none are missed.
     # The API defaults to 'active' only. We include 'retired' to get a complete history.
-    savings_plan_ids = [
-        sp["savingsPlanId"]
-        for page in require_paginator(sp_client, "describe_savings_plans").paginate()
-        for sp in page.get("savingsPlans", [])
-    ]
+    savings_plan_ids: List[str] = []
+    next_token: Optional[str] = None
+    while True:
+        params: Dict[str, Any] = {"NextToken": next_token} if next_token else {}
+        resp = _safe_aws_call(
+            sp_client.describe_savings_plans,
+            default={"savingsPlans": []},
+            account=alias,
+            **params,
+        )
+        savings_plan_ids.extend(
+            sp.get("savingsPlanId") for sp in resp.get("savingsPlans", [])
+        )
+        next_token = resp.get("NextToken")
+        if not next_token:
+            break
 
     if not savings_plan_ids:
         return {"SavingsPlans": []}
