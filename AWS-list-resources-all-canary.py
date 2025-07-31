@@ -3018,10 +3018,16 @@ def get_ses_details(
     """Collects details for SES identities and their verification status."""
     out: List[Dict[str, Any]] = []
 
-    # The list_identities call returns all identities in a single, non-paginated response.
-    identities = _safe_aws_call(
-        ses_client.list_identities, default={"Identities": []}, account=alias
-    ).get("Identities", [])
+    # List all identities across pages.
+    identities: List[str] = []
+    for page in _safe_paginator(
+        require_paginator(ses_client, "list_identities").paginate,
+        account=alias,
+    ):
+        identities.extend(page.get("Identities", []))
+
+    # Deduplicate and sort before fetching verification status.
+    identities = sorted(set(identities))
 
     if not identities:
         return {"SES": []}
