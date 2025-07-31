@@ -1158,32 +1158,33 @@ def get_ec2_details(
             elif ":volume/" in arn:
                 prot_v.add(arn.rsplit("/", 1)[-1])
 
-    plans = _safe_aws_call(
-        backup_client.list_backup_plans, default={"BackupPlansList": []}, account=alias
-    )["BackupPlansList"]
-    for p in plans:
-        for sel in _safe_aws_call(
-            backup_client.list_backup_selections,
-            default={"BackupSelectionsList": []},
-            account=alias,
-            BackupPlanId=p["BackupPlanId"],
-        )["BackupSelectionsList"]:
-            cfg = _safe_aws_call(
-                backup_client.get_backup_selection,
-                default={"BackupSelection": {}},
+    for plan_page in _safe_paginator(
+        require_paginator(backup_client, "list_backup_plans").paginate,
+        account=alias,
+    ):
+        for p in plan_page.get("BackupPlansList", []):
+            for sel_page in _safe_paginator(
+                require_paginator(backup_client, "list_backup_selections").paginate,
                 account=alias,
                 BackupPlanId=p["BackupPlanId"],
-                SelectionId=sel["SelectionId"],
-            )["BackupSelection"]
-            for arn in cfg.get("Resources", []):
-                if arn.endswith("/instance/*"):
-                    all_i = True
-                elif arn.endswith("/volume/*"):
-                    all_v = True
-                elif ":instance/" in arn:
-                    plan_i.add(arn.rsplit("/", 1)[-1])
-                elif ":volume/" in arn:
-                    plan_v.add(arn.rsplit("/", 1)[-1])
+            ):
+                for sel in sel_page.get("BackupSelectionsList", []):
+                    cfg = _safe_aws_call(
+                        backup_client.get_backup_selection,
+                        default={"BackupSelection": {}},
+                        account=alias,
+                        BackupPlanId=p["BackupPlanId"],
+                        SelectionId=sel["SelectionId"],
+                    )["BackupSelection"]
+                    for arn in cfg.get("Resources", []):
+                        if arn.endswith("/instance/*"):
+                            all_i = True
+                        elif arn.endswith("/volume/*"):
+                            all_v = True
+                        elif ":instance/" in arn:
+                            plan_i.add(arn.rsplit("/", 1)[-1])
+                        elif ":volume/" in arn:
+                            plan_v.add(arn.rsplit("/", 1)[-1])
 
     for inst in instances:
         iid = inst["InstanceId"]
@@ -1820,39 +1821,44 @@ def get_eventbridge_scheduler_details(
 # --------------------------------------------------------------------------
 def get_backup_details(backup_client: BaseClient, alias: str) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
-    plans = _safe_aws_call(
-        backup_client.list_backup_plans, default={"BackupPlansList": []}, account=alias
-    )["BackupPlansList"]
-    for summary in plans:
-        pid, vid = summary["BackupPlanId"], summary["VersionId"]
-        created = to_local(summary.get("CreationDate"), backup_client.meta.region_name)
-        plan = _safe_aws_call(
-            backup_client.get_backup_plan,
-            default={"BackupPlan": {}},
-            account=alias,
-            BackupPlanId=pid,
-            VersionId=vid,
-        )["BackupPlan"]
-        if not plan:
-            continue
+    for plan_page in _safe_paginator(
+        require_paginator(backup_client, "list_backup_plans").paginate,
+        account=alias,
+    ):
+        for summary in plan_page.get("BackupPlansList", []):
+            pid, vid = summary["BackupPlanId"], summary["VersionId"]
+            created = to_local(summary.get("CreationDate"), backup_client.meta.region_name)
 
-        sels = _safe_aws_call(
-            backup_client.list_backup_selections,
-            default={"BackupSelectionsList": []},
-            account=alias,
-            BackupPlanId=pid,
-        )["BackupSelectionsList"]
-        sel_map: Dict[str, Any] = {}
-        for sel in sels:
-            sid = sel["SelectionId"]
-            cfg = _safe_aws_call(
-                backup_client.get_backup_selection,
-                default={"BackupSelection": {}},
+            plan = _safe_aws_call(
+                backup_client.get_backup_plan,
+                default={"BackupPlan": {}},
                 account=alias,
                 BackupPlanId=pid,
-                SelectionId=sid,
-            )["BackupSelection"]
-            sel_map[sid] = cfg
+                VersionId=vid,
+            )["BackupPlan"]
+            if not plan:
+                continue
+
+            sels = [
+                sel
+                for sel_page in _safe_paginator(
+                    require_paginator(backup_client, "list_backup_selections").paginate,
+                    account=alias,
+                    BackupPlanId=pid,
+                )
+                for sel in sel_page.get("BackupSelectionsList", [])
+            ]
+            sel_map: Dict[str, Any] = {}
+            for sel in sels:
+                sid = sel["SelectionId"]
+                cfg = _safe_aws_call(
+                    backup_client.get_backup_selection,
+                    default={"BackupSelection": {}},
+                    account=alias,
+                    BackupPlanId=pid,
+                    SelectionId=sid,
+                )["BackupSelection"]
+                sel_map[sid] = cfg
 
         for rule in plan.get("Rules", []):
             expr = rule.get("ScheduleExpression", "")
