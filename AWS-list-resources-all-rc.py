@@ -482,6 +482,18 @@ def _safe_paginator(
         log("warning", f"Paginator aborted: {exc}", account=account)
 
 
+# --------------------------------------------------------------------------
+# Helper for strict paginator access
+# --------------------------------------------------------------------------
+def require_paginator(client: BaseClient, op: str) -> Paginator:
+    """Return a paginator or raise if the operation can't be paginated."""
+    if not client.can_paginate(op):
+        raise RuntimeError(
+            f"{client.meta.service_model.service_name} cannot paginate '{op}'"
+        )
+    return client.get_paginator(op)
+
+
 # ─────────────────────── time / formatting helpers ───────────────────────
 
 _TIMEZONE_OFFSET_RE = re.compile(r"([+-]\d{2})(\d{2})$")  # +0800 → +08:00
@@ -1723,9 +1735,14 @@ def get_acm_details(acm_client: BaseClient, alias: str) -> List[Dict[str, Any]]:
 # --------------------------------------------------------------------------
 def get_eventbridge_details(events: BaseClient, alias: str) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
-    buses = _safe_aws_call(
-        events.list_event_buses, default={"EventBuses": []}, account=alias
-    )["EventBuses"]
+    buses = [
+        b
+        for page in _safe_paginator(
+            require_paginator(events, "list_event_buses").paginate,
+            account=alias,
+        )
+        for b in page.get("EventBuses", [])
+    ]
     for bus in buses:
         name = bus.get("Name", "")
         for page in _safe_paginator(
@@ -1738,13 +1755,16 @@ def get_eventbridge_details(events: BaseClient, alias: str) -> List[Dict[str, An
                 if not expr:
                     continue
                 freq, det = humanise_schedule(expr)
-                targ = _safe_aws_call(
-                    events.list_targets_by_rule,
-                    default={"Targets": []},
-                    account=alias,
-                    Rule=rule["Name"],
-                    EventBusName=name,
-                )["Targets"]
+                targ = [
+                    t
+                    for page in _safe_paginator(
+                        require_paginator(events, "list_targets_by_rule").paginate,
+                        account=alias,
+                        Rule=rule["Name"],
+                        EventBusName=name,
+                    )
+                    for t in page.get("Targets", [])
+                ]
                 first = targ[0] if targ else {}
                 out.append(
                     {
