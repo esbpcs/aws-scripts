@@ -1547,16 +1547,18 @@ def get_ec2_details(
     # Batch fetch additional data to improve performance
     inst_ids = {i["InstanceId"] for i in instances}
 
-    volume_info = {
-        v["VolumeId"]: {"Size": v.get("Size"), "Type": v.get("VolumeType")}
-        for chunk in chunked(sorted(inst_ids), 500)
-        for v in _safe_aws_call(
-            ec2_client.describe_volumes,
-            default={"Volumes": []},
+    volume_info: Dict[str, Dict[str, Any]] = {}
+    for chunk in chunked(sorted(inst_ids), 500):
+        for page in _safe_paginator(
+            require_paginator(ec2_client, "describe_volumes").paginate,
             account=alias,
             Filters=[{"Name": "attachment.instance-id", "Values": list(chunk)}],
-        ).get("Volumes", [])
-    }
+        ):
+            for v in page.get("Volumes", []):
+                volume_info[v["VolumeId"]] = {
+                    "Size": v.get("Size"),
+                    "Type": v.get("VolumeType"),
+                }
 
     specs = {
         t: s
