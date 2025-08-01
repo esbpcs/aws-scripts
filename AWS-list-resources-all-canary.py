@@ -1416,16 +1416,16 @@ def get_cost_opportunities(
                     ).get("TargetHealthDescriptions")
                     for tg in target_groups
                 )
-            if is_idle:
-                out.append(
-                    {
-                        "ResourceType": "Load Balancer",
-                        "ResourceId": lb["DNSName"],
-                        "Reason": "Idle (No Healthy Targets)",
-                        "Details": f"Name: {lb['LoadBalancerName']}",
-                        "EstimatedMonthlySavings": "N/A",  # Cost is complex, depends on LCUs.
-                    }
-                )
+                if is_idle:
+                    out.append(
+                        {
+                            "ResourceType": "Load Balancer",
+                            "ResourceId": lb["DNSName"],
+                            "Reason": "Idle (No Healthy Targets)",
+                            "Details": f"Name: {lb['LoadBalancerName']}",
+                            "EstimatedMonthlySavings": "N/A",  # Cost is complex, depends on LCUs.
+                        }
+                    )
     except Exception as e:
         log(
             "warning",
