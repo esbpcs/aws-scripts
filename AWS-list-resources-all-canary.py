@@ -2208,12 +2208,12 @@ def get_iam_groups_details(iam_client: BaseClient, alias: str) -> List[Dict[str,
         group_name = group["GroupName"]
 
         # Enrich with members and policies
-        group["Members"] = [
-            u["UserName"]
-            for u in _safe_aws_call(
-                iam_client.get_group, default={"Users": []}, GroupName=group_name
-            ).get("Users", [])
-        ]
+        members: List[str] = []
+        for page in require_paginator(iam_client, "get_group").paginate(
+            GroupName=group_name
+        ):
+            members.extend(u["UserName"] for u in page.get("Users", []))
+        group["Members"] = members
         group["AttachedPolicies"] = [
             p["PolicyArn"]
             for page in _safe_paginator(
