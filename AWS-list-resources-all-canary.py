@@ -842,6 +842,19 @@ REGION_NAMES = {
     "ap-southeast-2": "Asia Pacific (Sydney)",
     "ap-south-1": "Asia Pacific (Mumbai)",
     "sa-east-1": "South America (Sao Paulo)",
+    "af-south-1": "Africa (Cape Town)",
+    "af-north-1": "Africa (Cairo)",
+    "ap-east-1": "Asia Pacific (Hong Kong)",
+    "ap-south-2": "Asia Pacific (Hyderabad)",
+    "ap-northeast-3": "Asia Pacific (Osaka)",
+    "ap-southeast-3": "Asia Pacific (Jakarta)",
+    "ap-southeast-4": "Asia Pacific (Melbourne)",
+    "eu-central-2": "EU (Zurich)",
+    "eu-south-1": "EU (Milan)",
+    "eu-south-2": "EU (Madrid)",
+    "me-south-1": "Middle East (Bahrain)",
+    "me-central-1": "Middle East (UAE)",
+    "il-central-1": "Israel (Tel Aviv)",
 }
 
 
