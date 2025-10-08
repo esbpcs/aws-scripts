@@ -1,5 +1,7 @@
 #!/bin/bash
-set -euo pipefail
+set -o errexit -o nounset -o pipefail -o errtrace
+IFS=$'\n\t'
+umask 077
 
 # Cleanup function to remove the temporary file.
 cleanup() {
@@ -8,7 +10,7 @@ cleanup() {
         rm -f "$TEMP_SCRIPT"
     fi
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM ERR
 
 # Usage: ./run-presigned.sh BUCKET_NAME SCRIPT_NAME [SCRIPT_PARAMS...]
 if [ "$#" -lt 2 ]; then
@@ -20,6 +22,25 @@ BUCKET_NAME="$1"
 SCRIPT_NAME="$2"
 shift 2 # Forward any additional parameters to the downloaded script.
 
+EXPECTED_OWNER="${EXPECTED_OWNER:-${AWS_EXPECTED_OWNER:-}}"
+if [[ -n "$EXPECTED_OWNER" ]]; then
+    OWNER_ARGS=(--expected-bucket-owner "$EXPECTED_OWNER")
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Enforcing expected bucket owner: $EXPECTED_OWNER" >&2
+else
+    OWNER_ARGS=()
+fi
+
+CURL_COMMON_ARGS=(
+    --fail
+    --show-error
+    --silent
+    --connect-timeout 10
+    --retry 3
+    --retry-delay 2
+    --retry-max-time 120
+    --retry-connrefused
+)
+
 # Check for required commands.
 for cmd in aws curl bash; do
     if ! command -v "$cmd" &>/dev/null; then
@@ -27,6 +48,17 @@ for cmd in aws curl bash; do
         exit 1
     fi
 done
+
+# Presigned URL lifetime (seconds). Allow override via PRESIGN_TTL env var.
+PRESIGN_TTL="${PRESIGN_TTL:-300}"
+if ! [[ "$PRESIGN_TTL" =~ ^[0-9]+$ ]]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Error: PRESIGN_TTL must be an integer between 1 and 604800." >&2
+    exit 1
+fi
+if (( PRESIGN_TTL < 1 || PRESIGN_TTL > 604800 )); then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Error: PRESIGN_TTL value $PRESIGN_TTL is outside the supported range (1-604800)." >&2
+    exit 1
+fi
 
 # Prefer python3 if available, otherwise fallback to python.
 if command -v python3 &>/dev/null; then
@@ -42,7 +74,7 @@ install_pip() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - pip not found. Attempting to install pip via ensurepip." >&2
     if ! $PYTHON_CMD -m ensurepip --upgrade; then
         echo "$(date '+%Y-%m-%d %H:%M:%S') - ensurepip failed. Downloading get-pip.py." >&2
-        if curl --fail --silent https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py; then
+        if curl "${CURL_COMMON_ARGS[@]}" https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py; then
             $PYTHON_CMD /tmp/get-pip.py --user
             rm -f /tmp/get-pip.py
         else
@@ -52,12 +84,15 @@ install_pip() {
     fi
 }
 
-# Hardcode the bucket's region.
-BUCKET_REGION="ap-southeast-1"
+# Automatically detect the bucket's region.
+BUCKET_REGION=$(aws s3api get-bucket-location --bucket "$BUCKET_NAME" "${OWNER_ARGS[@]}" --output text 2>/dev/null)
+if [[ -z "$BUCKET_REGION" || "$BUCKET_REGION" == "None" ]]; then
+    BUCKET_REGION="us-east-1"
+fi
 echo "$(date '+%Y-%m-%d %H:%M:%S') - Bucket $BUCKET_NAME is in region: $BUCKET_REGION" >&2
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') - Generating pre-signed URL for s3://$BUCKET_NAME/$SCRIPT_NAME in region $BUCKET_REGION" >&2
-PRESIGNED_URL=$(aws s3 presign "s3://$BUCKET_NAME/$SCRIPT_NAME" --expires-in 60 --region "$BUCKET_REGION")
+PRESIGNED_URL=$(aws s3 presign "s3://$BUCKET_NAME/$SCRIPT_NAME" --expires-in "$PRESIGN_TTL" --region "$BUCKET_REGION" "${OWNER_ARGS[@]}")
 if [ -z "$PRESIGNED_URL" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') - Error: Failed to generate a pre-signed URL." >&2
     exit 1
@@ -71,7 +106,7 @@ chmod 700 "$TEMP_SCRIPT"
 echo "$(date '+%Y-%m-%d %H:%M:%S') - Temporary file created: $TEMP_SCRIPT" >&2
 
 # Download the main script securely.
-if ! curl --fail --silent "$PRESIGNED_URL" -o "$TEMP_SCRIPT"; then
+if ! curl "${CURL_COMMON_ARGS[@]}" "$PRESIGNED_URL" -o "$TEMP_SCRIPT"; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') - Error: Failed to download the script from S3." >&2
     exit 1
 fi
@@ -79,6 +114,51 @@ fi
 # Convert DOS/Windows line endings to Unix format.
 sed -i 's/\r//g' "$TEMP_SCRIPT"
 echo "$(date '+%Y-%m-%d %H:%M:%S') - Converted main script to Unix format." >&2
+
+# Detect common S3 error responses to avoid executing HTML/XML content.
+if head -n 1 "$TEMP_SCRIPT" | grep -qi "<?xml"; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Error: Downloaded file appears to be an S3 error document." >&2
+    exit 1
+fi
+
+# Validate object integrity using checksum metadata when available.
+read -r REMOTE_SHA256 REMOTE_ETAG < <(
+    aws s3api head-object \
+        --bucket "$BUCKET_NAME" \
+        --key "$SCRIPT_NAME" \
+        --region "$BUCKET_REGION" \
+        --checksum-mode ENABLED \
+        "${OWNER_ARGS[@]}" \
+        --query '[ChecksumSHA256,ETag]' \
+        --output text 2>/dev/null || echo "None None"
+)
+
+if [[ -n "$REMOTE_SHA256" && "$REMOTE_SHA256" != "None" ]]; then
+    LOCAL_SHA256=$($PYTHON_CMD - <<'PY' "$TEMP_SCRIPT"
+import base64, hashlib, sys
+with open(sys.argv[1], 'rb') as fh:
+    digest = hashlib.sha256(fh.read()).digest()
+print(base64.b64encode(digest).decode('ascii'))
+PY
+    )
+    if [[ "$LOCAL_SHA256" != "$REMOTE_SHA256" ]]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - Error: SHA256 checksum mismatch for $SCRIPT_NAME." >&2
+        exit 1
+    fi
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Verified SHA256 checksum for $SCRIPT_NAME." >&2
+else
+    REMOTE_ETAG=${REMOTE_ETAG//"/}
+    if [[ "${#REMOTE_ETAG}" -eq 32 ]]; then
+        LOCAL_MD5=$(md5sum "$TEMP_SCRIPT" | awk '{print $1}')
+        if [[ "$LOCAL_MD5" != "$REMOTE_ETAG" ]]; then
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Error: MD5/ETag mismatch for $SCRIPT_NAME." >&2
+            exit 1
+        fi
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - Verified object integrity using ETag." >&2
+    else
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - Warning: No checksum metadata available; skipping integrity verification." >&2
+    fi
+fi
 
 # Determine file extension.
 ext="${SCRIPT_NAME##*.}"
@@ -99,7 +179,7 @@ if [ "$ext" == "py" ]; then
     REQ_FOUND=""
     for candidate in "${candidate_requirements[@]}"; do
         # Use head-object to check if the file exists without requiring ListBucket permission.
-        if aws s3api head-object --bucket "$BUCKET_NAME" --key "$candidate" --output text >/dev/null 2>&1; then
+        if aws s3api head-object --bucket "$BUCKET_NAME" --key "$candidate" --region "$BUCKET_REGION" "${OWNER_ARGS[@]}" --output text >/dev/null 2>&1; then
             REQ_FOUND="$candidate"
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Found requirements file: $REQ_FOUND" >&2
             break
@@ -109,9 +189,9 @@ if [ "$ext" == "py" ]; then
     # If a requirements file is found, download and install dependencies.
     if [ -n "$REQ_FOUND" ]; then
         REQ_TEMP=$(mktemp /tmp/requirements.$(date +%Y%m%d%H%M%S).XXXXXX.txt)
-        PRESIGNED_REQ=$(aws s3 presign "s3://$BUCKET_NAME/$REQ_FOUND" --expires-in 60 --region "$BUCKET_REGION")
+        PRESIGNED_REQ=$(aws s3 presign "s3://$BUCKET_NAME/$REQ_FOUND" --expires-in "$PRESIGN_TTL" --region "$BUCKET_REGION" "${OWNER_ARGS[@]}")
         if [ -n "$PRESIGNED_REQ" ]; then
-            if curl --fail --silent "$PRESIGNED_REQ" -o "$REQ_TEMP"; then
+            if curl "${CURL_COMMON_ARGS[@]}" "$PRESIGNED_REQ" -o "$REQ_TEMP"; then
                 # Compute MD5 hash of the requirements file.
                 REQ_HASH=$(md5sum "$REQ_TEMP" | awk '{print $1}')
                 MARKER_FILE="/tmp/${SCRIPT_NAME}.requirements.md5"
