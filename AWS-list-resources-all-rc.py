@@ -704,6 +704,24 @@ def _iterate_operation_pages(
         if not any(next_tokens.values()):
             break
 
+        progress_made = False
+        for param, value in next_tokens.items():
+            if value and token_state.get(param) != value:
+                progress_made = True
+                break
+
+        if not progress_made:
+            log(
+                "warning",
+                (
+                    "Pagination tokens for %s did not advance; "
+                    "stopping to avoid an infinite loop"
+                )
+                % operation,
+                account=alias,
+            )
+            break
+
         token_state.update(next_tokens)
 
 
@@ -1536,21 +1554,13 @@ def storage_lens_metrics(
         s3control = aws_client("s3control", "us-east-1", session)
 
         configs: List[Dict[str, Any]] = []
-        token: Optional[str] = None
-        while True:
-            params = {"AccountId": account_id}
-            if token:
-                params["NextToken"] = token
-            resp = _safe_aws_call(
-                s3control.list_storage_lens_configurations,
-                default={"StorageLensConfigurationList": []},
-                account=account_id,
-                **params,
-            )
-            configs.extend(resp.get("StorageLensConfigurationList", []))
-            token = resp.get("NextToken")
-            if not token:
-                break
+        for page in _iterate_operation_pages(
+            s3control,
+            "list_storage_lens_configurations",
+            account_id,
+            AccountId=account_id,
+        ):
+            configs.extend(page.get("StorageLensConfigurationList", []))
 
         if not configs:
             logger.debug(
@@ -3298,19 +3308,12 @@ def get_acm_details(acm_client: BaseClient, alias: str) -> List[Dict[str, Any]]:
 def get_eventbridge_details(events: BaseClient, alias: str) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     buses: List[Dict[str, Any]] = []
-    token: Optional[str] = None
-    while True:
-        params = {"NextToken": token} if token else {}
-        resp = _safe_aws_call(
-            events.list_event_buses,
-            default={"EventBuses": []},
-            account=alias,
-            **params,
-        )
-        buses.extend(resp.get("EventBuses", []))
-        token = resp.get("NextToken")
-        if not token:
-            break
+    for page in _iterate_operation_pages(
+        events,
+        "list_event_buses",
+        alias,
+    ):
+        buses.extend(page.get("EventBuses", []))
     for bus in buses:
         name = bus.get("Name", "")
         for page in _safe_paginator(

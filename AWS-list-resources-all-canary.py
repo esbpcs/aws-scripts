@@ -898,6 +898,24 @@ def _iterate_operation_pages(
         if not any(next_tokens.values()):
             break
 
+        progress_made = False
+        for param, value in next_tokens.items():
+            if value and token_state.get(param) != value:
+                progress_made = True
+                break
+
+        if not progress_made:
+            log(
+                "warning",
+                (
+                    "Pagination tokens for %s did not advance; "
+                    "stopping to avoid an infinite loop"
+                )
+                % operation,
+                account=alias,
+            )
+            break
+
         token_state.update(next_tokens)
 
 
@@ -1864,21 +1882,13 @@ def storage_lens_metrics(
 
         # 1. List all Storage Lens configurations for the account
         configs: List[Dict[str, Any]] = []
-        next_token: Optional[str] = None
-        while True:
-            params: Dict[str, Any] = {"AccountId": account_id}
-            if next_token:
-                params["NextToken"] = next_token
-            resp = _safe_aws_call(
-                s3control.list_storage_lens_configurations,
-                default={"StorageLensConfigurationList": []},
-                account=account_id,
-                **params,
-            )
-            configs.extend(resp.get("StorageLensConfigurationList", []))
-            next_token = resp.get("NextToken")
-            if not next_token:
-                break
+        for page in _iterate_operation_pages(
+            s3control,
+            "list_storage_lens_configurations",
+            account_id,
+            AccountId=account_id,
+        ):
+            configs.extend(page.get("StorageLensConfigurationList", []))
         if not configs:
             log("debug", "No S3 Storage Lens configurations found in this account.")
             return None, None
@@ -2359,22 +2369,14 @@ def get_ebs_volume_cost(
                 "Value": REGION_NAMES.get(region, region),
             },
         ]
-        next_token: Optional[str] = None
-        while True:
-            params: Dict[str, Any] = {
-                "ServiceCode": "AmazonEC2",
-                "Filters": filters,
-            }
-            if next_token:
-                params["NextToken"] = next_token
-            response = _safe_aws_call(
-                pricing_client.get_products,
-                default={"PriceList": []},
-                account="-",
-                **params,
-            )
-
-            for price_item_str in response.get("PriceList", []):
+        for page in _iterate_operation_pages(
+            pricing_client,
+            "get_products",
+            "-",
+            ServiceCode="AmazonEC2",
+            Filters=filters,
+        ):
+            for price_item_str in page.get("PriceList", []):
                 price_item = json.loads(price_item_str)
                 on_demand = price_item.get("terms", {}).get("OnDemand", {})
                 price_dimensions = next(iter(on_demand.values()), {}).get(
@@ -2388,10 +2390,6 @@ def get_ebs_volume_cost(
 
                 if price_per_gb_str:
                     return float(price_per_gb_str) * volume_size
-
-            next_token = response.get("NextToken")
-            if not next_token:
-                break
     except Exception as e:
         log(
             "warning",
@@ -2415,22 +2413,14 @@ def get_eip_cost(region: str, session: boto3.Session) -> Optional[float]:
                 "Value": f"{region.upper()}-IdleAddress:Vpc",
             },
         ]
-        next_token: Optional[str] = None
-        while True:
-            params: Dict[str, Any] = {
-                "ServiceCode": "AmazonEC2",
-                "Filters": filters,
-            }
-            if next_token:
-                params["NextToken"] = next_token
-            response = _safe_aws_call(
-                pricing_client.get_products,
-                default={"PriceList": []},
-                account="-",
-                **params,
-            )
-
-            for price_item_str in response.get("PriceList", []):
+        for page in _iterate_operation_pages(
+            pricing_client,
+            "get_products",
+            "-",
+            ServiceCode="AmazonEC2",
+            Filters=filters,
+        ):
+            for price_item_str in page.get("PriceList", []):
                 price_item = json.loads(price_item_str)
                 on_demand = price_item.get("terms", {}).get("OnDemand", {})
                 price_dimensions = next(iter(on_demand.values()), {}).get(
@@ -2444,10 +2434,6 @@ def get_eip_cost(region: str, session: boto3.Session) -> Optional[float]:
 
                 if price_per_hour_str:
                     return float(price_per_hour_str) * 730
-
-            next_token = response.get("NextToken")
-            if not next_token:
-                break
 
     except Exception as e:
         log("warning", f"Could not calculate EIP cost for region {region}: {e}")
@@ -2473,20 +2459,13 @@ def get_ec2_instance_cost(instance_id: str, ce_client: BaseClient) -> Optional[f
         }
         total_cost = 0.0
         seen_cost = False
-        next_page: Optional[str] = None
-        while True:
-            if next_page:
-                params["NextPageToken"] = next_page
-            else:
-                params.pop("NextPageToken", None)
-            response = _safe_aws_call(
-                ce_client.get_cost_and_usage_with_resources,
-                default={"ResultsByTime": []},
-                account="-",
-                **params,
-            )
-
-            for result in response.get("ResultsByTime", []):
+        for page in _iterate_operation_pages(
+            ce_client,
+            "get_cost_and_usage_with_resources",
+            "-",
+            **params,
+        ):
+            for result in page.get("ResultsByTime", []):
                 for group in result.get("Groups", []):
                     amount = (
                         group.get("Metrics", {})
@@ -2496,10 +2475,6 @@ def get_ec2_instance_cost(instance_id: str, ce_client: BaseClient) -> Optional[f
                     if amount:
                         total_cost += float(amount)
                         seen_cost = True
-
-            next_page = response.get("NextPageToken")
-            if not next_page:
-                break
 
         if seen_cost:
             return total_cost
@@ -3311,19 +3286,12 @@ def get_eventbridge_details(
     out: List[Dict[str, Any]] = []
 
     buses: List[Dict[str, Any]] = []
-    next_token: Optional[str] = None
-    while True:
-        params = {"NextToken": next_token} if next_token else {}
-        resp = _safe_aws_call(
-            events_client.list_event_buses,
-            default={"EventBuses": []},
-            account=alias,
-            **params,
-        )
-        buses.extend(resp.get("EventBuses", []))
-        next_token = resp.get("NextToken")
-        if not next_token:
-            break
+    for page in _iterate_operation_pages(
+        events_client,
+        "list_event_buses",
+        alias,
+    ):
+        buses.extend(page.get("EventBuses", []))
 
     for bus in buses:
         bus_name = bus.get("Name", "")
