@@ -597,6 +597,13 @@ def _safe_aws_call(
         "NoSuchMultiRegionAccessPointRouteConfiguration",
         "ReplicationConfigurationNotFoundError",
         "NoSuchAccessPoint",
+        "NoSuchMetricsConfiguration",
+        "NoSuchBucketMetricsConfiguration",
+        "NoSuchAnalyticsConfiguration",
+        "NoSuchBucketAnalyticsConfiguration",
+        "NoSuchInventoryConfiguration",
+        "NoSuchBucketInventoryConfiguration",
+        "NoSuchNotificationConfiguration",
     }
 
     try:
@@ -1104,6 +1111,8 @@ def humanise_schedule(expr: str, tz: Optional[str] = None) -> Tuple[str, str]:
                 friendly = _cron_desc(cron_expr, locale="en")
             except TypeError:
                 friendly = _cron_desc(cron_expr)
+            except ValueError:
+                friendly = cron_expr
     else:
         friendly = expr
 
@@ -1560,7 +1569,18 @@ def _split_s3_arn(arn: str) -> Optional[Tuple[str, str]]:
         return None
 
     if service == "s3":
-        bucket, _, key = resource.partition("/")
+        segments = [segment for segment in resource.split("/") if segment]
+        if not segments:
+            return None
+        if segments[0] in {"accesspoint", "mrap", "mraccesspoint"}:
+            if "object" in segments:
+                idx = segments.index("object")
+                identifier = "/".join(segments[:idx])
+                key = "/".join(segments[idx + 1 :])
+                return (identifier, key)
+            return ("/".join(segments), "")
+        bucket = segments[0]
+        key = "/".join(segments[1:]) if len(segments) > 1 else ""
         return (bucket, key) if bucket else None
 
     if service in {"s3express", "s3-outposts", "s3-object-lambda"}:
@@ -1723,15 +1743,38 @@ def storage_lens_metrics(
         )
 
         for config_id, export_cfg in export_candidates:
-            export_bucket_arn = export_cfg.get("Arn")
-            if not export_bucket_arn:
+            export_bucket_spec = str(export_cfg.get("Arn") or "")
+            if not export_bucket_spec:
                 continue
-
-            export_bucket = export_bucket_arn.split(":")[-1]
-            export_prefix = export_cfg.get("Prefix", "")
+            export_bucket_prefix_hint = ""
+            if export_bucket_spec.startswith("arn:"):
+                parsed_export = _split_s3_arn(export_bucket_spec)
+            else:
+                parsed_export = None
+            if parsed_export:
+                export_bucket_name, export_bucket_prefix_hint = parsed_export
+            else:
+                export_bucket_name = export_bucket_spec.split(":::")[-1]
+                if not export_bucket_name:
+                    export_bucket_name = export_bucket_spec.split(":")[-1]
+            if not export_bucket_name:
+                continue
+            export_prefix_raw = str(export_cfg.get("Prefix") or "")
+            prefix_components = [
+                part.strip("/")
+                for part in (export_bucket_prefix_hint, export_prefix_raw)
+                if part
+            ]
+            export_prefix = "/".join(prefix_components)
             export_account_id = str(export_cfg.get("AccountId") or account_id)
             export_format = (export_cfg.get("Format", "CSV") or "CSV").upper()
             export_compression = (export_cfg.get("Compression") or "GZIP").upper()
+
+            export_bucket_param = (
+                export_bucket_spec
+                if export_bucket_spec.startswith("arn:")
+                else export_bucket_name
+            )
 
             if export_format not in {"CSV", "PARQUET", "ORC"}:
                 logger.debug(
@@ -1740,7 +1783,7 @@ def storage_lens_metrics(
                 continue
 
             dest_region = bucket_region(
-                export_bucket, region, session, expected_owner=export_account_id
+                export_bucket_name, region, session, expected_owner=export_account_id
             )
             if not dest_region:
                 continue
@@ -1760,7 +1803,7 @@ def storage_lens_metrics(
             for page in _safe_paginator(
                 paginator.paginate,
                 account=account_id,
-                Bucket=export_bucket,
+                Bucket=export_bucket_param,
                 Prefix=manifest_prefix,
                 ExpectedBucketOwner=export_account_id,
             ):
@@ -1781,7 +1824,7 @@ def storage_lens_metrics(
                     s3_dest.get_object,
                     default={},
                     account=account_id,
-                    Bucket=export_bucket,
+                    Bucket=export_bucket_param,
                     Key=manifest_obj.get("Key", ""),
                     ExpectedBucketOwner=export_account_id,
                 )
@@ -1826,7 +1869,7 @@ def storage_lens_metrics(
                     bucket=bucket,
                     region=region,
                     destination_account_id=export_account_id,
-                    destination_bucket=export_bucket,
+                    destination_bucket=export_bucket_name,
                 ):
                     logger.debug(
                         "Skipping Storage Lens manifest for unexpected account/bucket/region"
@@ -1904,14 +1947,14 @@ def storage_lens_metrics(
                         arn_parts = _split_s3_arn(object_arn) if object_arn else None
                         if arn_parts:
                             bucket_part, key_part = arn_parts
-                            if bucket_part and bucket_part != export_bucket:
+                            if bucket_part and bucket_part != export_bucket_name:
                                 continue
                             if key_part:
                                 candidate_files.append((key_part, None, None, None))
                         for uri in location.get("URIPrefixes", []):
                             if uri.startswith("s3://"):
                                 bucket_part, _, key_part = uri[5:].partition("/")
-                                if bucket_part and bucket_part != export_bucket:
+                                if bucket_part and bucket_part != export_bucket_name:
                                     continue
                                 prefix_hint = key_part
                             else:
@@ -1920,7 +1963,7 @@ def storage_lens_metrics(
                             for page in _safe_paginator(
                                 paginator.paginate,
                                 account=account_id,
-                                Bucket=export_bucket,
+                                Bucket=export_bucket_param,
                                 Prefix=prefix_hint,
                                 ExpectedBucketOwner=export_account_id,
                             ):
@@ -2229,14 +2272,35 @@ def inventory_metrics(
         metrics: Optional[Tuple[int, int]] = None
         for cfg in configs_to_try:
             dest_info = cfg.get("Destination", {}).get("S3BucketDestination", {})
-            dest_arn = dest_info.get("Bucket", "")
-            if not dest_arn:
+            dest_spec = str(dest_info.get("Bucket") or "")
+            if not dest_spec:
                 continue
-            dest = dest_arn.split(":::")[-1]
+            dest_prefix_hint = ""
+            if dest_spec.startswith("arn:"):
+                parsed_dest = _split_s3_arn(dest_spec)
+            else:
+                parsed_dest = None
+            if parsed_dest:
+                dest_bucket_name, dest_prefix_hint = parsed_dest
+            else:
+                dest_bucket_name = dest_spec.split(":::")[-1]
+                if not dest_bucket_name:
+                    dest_bucket_name = dest_spec.split(":")[-1]
+            if not dest_bucket_name:
+                continue
             dest_account_id = str(dest_info.get("AccountId") or account_id)
-            dest_prefix = dest_info.get("Prefix", "")
+            dest_prefix_raw = str(dest_info.get("Prefix") or "")
+            prefix_parts = [
+                part.strip("/")
+                for part in (dest_prefix_hint, dest_prefix_raw)
+                if part
+            ]
+            dest_prefix = "/".join(prefix_parts)
             inventory_format = (dest_info.get("Format", "CSV") or "CSV").upper()
             inventory_compression = (dest_info.get("Compression") or "GZIP").upper()
+            dest_bucket_param = (
+                dest_spec if dest_spec.startswith("arn:") else dest_bucket_name
+            )
             if inventory_format not in {"CSV", "PARQUET", "ORC"}:
                 log(
                     "debug",
@@ -2276,7 +2340,7 @@ def inventory_metrics(
                 )
 
             dest_region = bucket_region(
-                dest, region_hint, session, expected_owner=dest_account_id
+                dest_bucket_name, region_hint, session, expected_owner=dest_account_id
             )
             if not dest_region:
                 continue
@@ -2287,7 +2351,7 @@ def inventory_metrics(
             for page in _safe_paginator(
                 paginator.paginate,
                 account=bucket,
-                Bucket=dest,
+                Bucket=dest_bucket_param,
                 Prefix=inventory_prefix,
                 ExpectedBucketOwner=dest_account_id,
             ):
@@ -2316,7 +2380,7 @@ def inventory_metrics(
                 manifest_resp = _safe_aws_call(
                     s3_dest.get_object,
                     default={},
-                    Bucket=dest,
+                    Bucket=dest_bucket_param,
                     Key=manifest_obj.get("Key", ""),
                     ExpectedBucketOwner=dest_account_id,
                     account=bucket,
@@ -2363,7 +2427,7 @@ def inventory_metrics(
                     region=region_hint,
                     prefix=source_prefix or None,
                     destination_account_id=dest_account_id,
-                    destination_bucket=dest,
+                    destination_bucket=dest_bucket_name,
                 ):
                     logger.debug(
                         "Skipping inventory manifest that does not match account %s bucket %s region %s prefix %s",
@@ -2421,14 +2485,14 @@ def inventory_metrics(
                         arn_parts = _split_s3_arn(object_arn) if object_arn else None
                         if arn_parts:
                             bucket_part, key_part = arn_parts
-                            if bucket_part and bucket_part != dest:
+                            if bucket_part and bucket_part != dest_bucket_name:
                                 continue
                             if key_part:
                                 candidate_files.append((key_part, None, None))
                         for uri in location.get("URIPrefixes", []):
                             if uri.startswith("s3://"):
                                 bucket_part, _, key_part = uri[5:].partition("/")
-                                if bucket_part and bucket_part != dest:
+                                if bucket_part and bucket_part != dest_bucket_name:
                                     continue
                                 prefix_hint = key_part
                             else:
@@ -2437,7 +2501,7 @@ def inventory_metrics(
                             for page in _safe_paginator(
                                 paginator.paginate,
                                 account=bucket,
-                                Bucket=dest,
+                                Bucket=dest_bucket_param,
                                 Prefix=prefix_hint,
                                 ExpectedBucketOwner=dest_account_id,
                             ):
@@ -2490,7 +2554,7 @@ def inventory_metrics(
                         fut = pool.submit(
                             _s3_select_sum_and_count,
                             s3_dest,
-                            dest,
+                            dest_bucket_param,
                             key,
                             account=bucket,
                             compression=comp or inventory_compression,

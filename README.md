@@ -20,6 +20,8 @@ This is the core tool of the repository, designed to scan and inventory resource
 - Supports filtering by account ID and AWS region.
 - Applies adaptive retries for throttling and transient network errors so large multi-account scans finish reliably.
 - Discovers undocumented pagination tokens dynamically to avoid truncating inventories when AWS adds new paging fields.
+- Understands modern S3 destinations (including access points, S3 Express, and Outposts) when reading Inventory and Storage Lens
+  manifests, so exports stored behind ARNs continue to be processed without manual tweaks.
 
 **Usage:**
 
