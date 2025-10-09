@@ -19,8 +19,11 @@ import re
 import sys
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import bz2
+import gzip
+import lzma
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from itertools import islice
@@ -28,36 +31,88 @@ from typing import (
     Any,
     Callable,
     Dict,
+    Iterable,
     Iterator,
     List,
     Optional,
     Set,
     Tuple,
     Union,
+    NoReturn,
 )
 
-import boto3
-from botocore.client import BaseClient
-from botocore.config import Config
-from botocore.exceptions import (
-    ClientError,
-    EndpointConnectionError,
-    NoCredentialsError,
-)
-from cron_descriptor import get_description as _cron_desc
-from defusedxml import ElementTree as ET
-from openpyxl import Workbook
-from openpyxl.utils.cell import get_column_letter
-from openpyxl.worksheet.table import Table, TableStyleInfo
-from openpyxl.worksheet.worksheet import Worksheet
-from tzlocal import get_localzone
 from xml.sax.saxutils import unescape
+
+
+def _exit_with_error(message: str) -> NoReturn:  # pragma: no cover - startup helper
+    """Emit a consistent fatal error message and terminate the process."""
+
+    sys.stderr.write(f"ERROR: {message.strip()}\n")
+    sys.exit(1)
+
+
+if sys.version_info < (3, 9):  # pragma: no cover - environment guard
+    _exit_with_error("Python 3.9 or later is required to run this script.")
+
+try:
+    import boto3
+    from botocore.client import BaseClient
+    from botocore.config import Config
+    from botocore.paginate import Paginator
+    from botocore.exceptions import (
+        ClientError,
+        ConnectionClosedError,
+        ConnectTimeoutError,
+        EndpointConnectionError,
+        NoCredentialsError,
+        ReadTimeoutError,
+    )
+    from cron_descriptor import get_description as _cron_desc
+    from defusedxml import ElementTree as ET
+    from openpyxl import Workbook
+    from openpyxl.utils.cell import get_column_letter
+    from openpyxl.worksheet.table import Table, TableStyleInfo
+    from openpyxl.worksheet.worksheet import Worksheet
+    from tzlocal import get_localzone
+except (ModuleNotFoundError, ImportError) as exc:  # pragma: no cover - dependency guard
+    missing = getattr(exc, "name", None) or str(exc)
+    _exit_with_error(
+        "Missing required dependency '{module}'. Install the packages listed in "
+        "Dependencies/Requirements.txt and retry.".format(module=missing)
+    )
+
 from zoneinfo import ZoneInfo
+
+try:
+    import zstandard as zstd  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    zstd = None  # type: ignore
+
+try:
+    from lz4 import frame as lz4f  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    lz4f = None  # type: ignore
+
+try:
+    import brotli  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    brotli = None  # type: ignore
+
+try:
+    import snappy  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    snappy = None  # type: ignore
 
 # ─────────────────────────── configuration ──────────────────────────
 CONNECT_TIMEOUT = int(os.getenv("AWS_CONNECT_TIMEOUT", "10"))
 READ_TIMEOUT = int(os.getenv("AWS_READ_TIMEOUT", "60"))
 MAX_ATTEMPTS = int(os.getenv("AWS_MAX_ATTEMPTS", "8"))
+AWS_RETRY_MODE = os.getenv("AWS_RETRY_MODE", "adaptive")
+
+# Adopt the latest AWS guidance to prefer regional STS endpoints and honour
+# S3 ARN regions unless the operator has explicitly set different values.
+os.environ.setdefault("AWS_STS_REGIONAL_ENDPOINTS", "regional")
+os.environ.setdefault("AWS_S3_USE_ARN_REGION", "true")
 
 # -- parallelism -----------------------------------------------------
 CPU_COUNT = multiprocessing.cpu_count()
@@ -67,7 +122,7 @@ _POOL_SIZE = MAX_REGIONS_IN_FLIGHT * MAX_TASKS_IN_REGION + 5  # HTTP-pool
 
 RETRY_CONFIG = Config(
     retries={
-        "mode": os.getenv("AWS_RETRY_MODE", "standard"),
+        "mode": AWS_RETRY_MODE,
         "max_attempts": MAX_ATTEMPTS,
     },
     connect_timeout=CONNECT_TIMEOUT,
@@ -93,13 +148,54 @@ MAX_KEYS_FOR_FULL_SCAN = int(os.getenv("AWS_MAX_KEYS_FOR_FULL_SCAN", "20000"))
 # misc
 SECS_PER_YEAR = 31_536_000
 DEFAULT_ROLE = "OrganizationAccountAccessRole"
+ASSUME_ROLE_DURATION = max(
+    900,
+    min(int(os.getenv("ASSUME_ROLE_DURATION", "3600")), 43200),
+)
+
+BENIGN_S3_ERRORS: Set[str] = {
+    "NoSuchLifecycleConfiguration",
+    "NoSuchTagSet",
+    "NoSuchBucketPolicy",
+    "NoSuchPublicAccessBlockConfiguration",
+    "ServerSideEncryptionConfigurationNotFoundError",
+    "NoSuchBucketLogging",
+    "NoSuchWebsiteConfiguration",
+    "NoSuchCORSConfiguration",
+    "OwnershipControlsNotFoundError",
+    "ObjectLockConfigurationNotFoundError",
+    "NoSuchAccessPointPolicy",
+    "NoSuchStorageLensConfiguration",
+    "StorageLensConfigurationNotFound",
+    "NoSuchIntelligentTieringConfiguration",
+    "NoSuchBucketIntelligentTieringConfiguration",
+    "NoSuchMultiRegionAccessPointPolicy",
+    "NoSuchMultiRegionAccessPointRouteConfiguration",
+    "ReplicationConfigurationNotFoundError",
+    "NoSuchAccessPoint",
+    "NoSuchMetricsConfiguration",
+    "NoSuchBucketMetricsConfiguration",
+    "NoSuchAnalyticsConfiguration",
+    "NoSuchBucketAnalyticsConfiguration",
+    "NoSuchInventoryConfiguration",
+    "NoSuchBucketInventoryConfiguration",
+    "NoSuchNotificationConfiguration",
+}
 
 REGION_TZ: Dict[str, str] = {
     "us-east-1": "America/New_York",
     "us-east-2": "America/Chicago",
     "us-west-1": "America/Los_Angeles",
     "us-west-2": "America/Los_Angeles",
+    "us-gov-west-1": "America/Los_Angeles",
+    "us-gov-east-1": "America/New_York",
+    "us-iso-east-1": "America/New_York",
+    "us-iso-west-1": "America/Los_Angeles",
+    "us-isob-east-1": "America/New_York",
+    "us-isob-west-1": "America/Los_Angeles",
+    "us-iso-south-1": "America/Chicago",
     "ca-central-1": "America/Toronto",
+    "ca-west-1": "America/Edmonton",
     "sa-east-1": "America/Sao_Paulo",
     "eu-west-1": "Europe/Dublin",
     "eu-west-2": "Europe/London",
@@ -111,6 +207,7 @@ REGION_TZ: Dict[str, str] = {
     "eu-south-2": "Europe/Madrid",
     "ap-south-1": "Asia/Kolkata",
     "ap-south-2": "Asia/Kolkata",
+    "ap-south-3": "Asia/Kolkata",
     "ap-northeast-1": "Asia/Tokyo",
     "ap-northeast-2": "Asia/Seoul",
     "ap-northeast-3": "Asia/Tokyo",
@@ -118,12 +215,78 @@ REGION_TZ: Dict[str, str] = {
     "ap-southeast-2": "Australia/Sydney",
     "ap-southeast-3": "Asia/Jakarta",
     "ap-southeast-4": "Australia/Melbourne",
+    "ap-southeast-5": "Asia/Kuala_Lumpur",
+    "ap-southeast-6": "Asia/Bangkok",
+    "ap-southeast-7": "Asia/Manila",
+    "ap-southeast-8": "Pacific/Auckland",
     "ap-east-1": "Asia/Hong_Kong",
     "me-south-1": "Asia/Bahrain",
     "me-central-1": "Asia/Dubai",
+    "me-south-2": "Asia/Riyadh",
     "af-south-1": "Africa/Johannesburg",
     "af-north-1": "Africa/Cairo",
     "il-central-1": "Asia/Jerusalem",
+    "cn-north-1": "Asia/Shanghai",
+    "cn-northwest-1": "Asia/Shanghai",
+}
+
+SAVINGS_PLAN_STATES = [
+    "active",
+    "payment-pending",
+    "payment-failed",
+    "queued",
+    "queued-pending-payment",
+    "queued-pending-acceptance",
+    "queued-deleted",
+    "retired",
+]
+
+REGION_NAMES = {
+    "us-east-1": "US East (N. Virginia)",
+    "us-east-2": "US East (Ohio)",
+    "us-west-1": "US West (N. California)",
+    "us-west-2": "US West (Oregon)",
+    "us-gov-west-1": "AWS GovCloud (US-West)",
+    "us-gov-east-1": "AWS GovCloud (US-East)",
+    "us-iso-east-1": "US ISO East",
+    "us-iso-west-1": "US ISO West",
+    "us-iso-south-1": "US ISO South",
+    "us-isob-east-1": "US ISOB East",
+    "us-isob-west-1": "US ISOB West",
+    "ca-central-1": "Canada (Central)",
+    "ca-west-1": "Canada West (Calgary)",
+    "eu-central-1": "EU (Frankfurt)",
+    "eu-central-2": "EU (Zurich)",
+    "eu-west-1": "EU (Ireland)",
+    "eu-west-2": "EU (London)",
+    "eu-west-3": "EU (Paris)",
+    "eu-north-1": "EU (Stockholm)",
+    "eu-south-1": "EU (Milan)",
+    "eu-south-2": "EU (Madrid)",
+    "ap-northeast-1": "Asia Pacific (Tokyo)",
+    "ap-northeast-2": "Asia Pacific (Seoul)",
+    "ap-northeast-3": "Asia Pacific (Osaka)",
+    "ap-east-1": "Asia Pacific (Hong Kong)",
+    "ap-south-1": "Asia Pacific (Mumbai)",
+    "ap-south-2": "Asia Pacific (Hyderabad)",
+    "ap-south-3": "Asia Pacific (Chennai)",
+    "ap-southeast-1": "Asia Pacific (Singapore)",
+    "ap-southeast-2": "Asia Pacific (Sydney)",
+    "ap-southeast-3": "Asia Pacific (Jakarta)",
+    "ap-southeast-4": "Asia Pacific (Melbourne)",
+    "ap-southeast-5": "Asia Pacific (Kuala Lumpur)",
+    "ap-southeast-6": "Asia Pacific (Bangkok)",
+    "ap-southeast-7": "Asia Pacific (Manila)",
+    "ap-southeast-8": "Asia Pacific (Auckland)",
+    "sa-east-1": "South America (Sao Paulo)",
+    "af-south-1": "Africa (Cape Town)",
+    "af-north-1": "Africa (Cairo)",
+    "me-south-1": "Middle East (Bahrain)",
+    "me-central-1": "Middle East (UAE)",
+    "me-south-2": "Middle East (Riyadh)",
+    "il-central-1": "Israel (Tel Aviv)",
+    "cn-north-1": "China (Beijing)",
+    "cn-northwest-1": "China (Ningxia)",
 }
 
 SERVICE_PREFIXES = {
@@ -389,6 +552,13 @@ def retry_with_backoff(
         "ProvisionedThroughputExceededException",
     }
 
+    transient_errors = (
+        EndpointConnectionError,
+        ConnectionClosedError,
+        ConnectTimeoutError,
+        ReadTimeoutError,
+    )
+
     for attempt in range(1, max_attempts + 1):
         try:
             return fn(**kwargs)
@@ -416,6 +586,30 @@ def retry_with_backoff(
             )
             time.sleep(delay)
 
+        except transient_errors as exc:
+            if attempt == max_attempts:
+                log(
+                    "error",
+                    (
+                        f"Max retries reached for {getattr(fn, '__name__', fn)}: "
+                        f"{exc.__class__.__name__}"
+                    ),
+                    account=account,
+                )
+                return default or {}
+
+            delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+            delay += delay * 0.3 * random.random()
+            log(
+                "warning",
+                (
+                    f"Network error ({exc.__class__.__name__}) {attempt}/{max_attempts}; "
+                    f"retrying in {delay:.1f}s"
+                ),
+                account=account,
+            )
+            time.sleep(delay)
+
     return default or {}  # never reached – type guard
 
 
@@ -433,13 +627,6 @@ def _safe_aws_call(
     kwargs.pop("service", None)
     kwargs.pop("operation", None)
 
-    benign_s3_errors = {
-        "NoSuchLifecycleConfiguration",
-        "NoSuchTagSet",
-        "NoSuchBucketPolicy",
-        "NoSuchPublicAccessBlockConfiguration",
-    }
-
     try:
         return (
             retry_with_backoff(fn, account=account, **kwargs) if retry else fn(**kwargs)
@@ -452,7 +639,7 @@ def _safe_aws_call(
             isinstance(client, BaseClient)
             and client.meta.service_model.service_name == "s3"
         )
-        if is_s3 and code in benign_s3_errors:
+        if is_s3 and code in BENIGN_S3_ERRORS:
             return default or {}
 
         log(
@@ -462,7 +649,12 @@ def _safe_aws_call(
         )
         return default or {}
 
-    except EndpointConnectionError as exc:
+    except (
+        EndpointConnectionError,
+        ConnectionClosedError,
+        ConnectTimeoutError,
+        ReadTimeoutError,
+    ) as exc:
         log("warning", f"Endpoint error: {exc}", account=account)
         return default or {}
 
@@ -478,7 +670,13 @@ def _safe_paginator(
     """
     try:
         yield from paginate_fn(**kwargs)  # iterable → iterator (yield-from)
-    except (ClientError, EndpointConnectionError) as exc:
+    except (
+        ClientError,
+        EndpointConnectionError,
+        ConnectionClosedError,
+        ConnectTimeoutError,
+        ReadTimeoutError,
+    ) as exc:
         log("warning", f"Paginator aborted: {exc}", account=account)
 
 
@@ -492,6 +690,371 @@ def require_paginator(client: BaseClient, op: str) -> Paginator:
             f"{client.meta.service_model.service_name} cannot paginate '{op}'"
         )
     return client.get_paginator(op)
+
+
+def _iterate_operation_pages(
+    client: BaseClient,
+    operation: str,
+    alias: str,
+    **operation_kwargs: Any,
+) -> Iterable[Dict[str, Any]]:
+    """Yield pages for an AWS operation, even when boto3 lacks a paginator."""
+
+    if client.can_paginate(operation):
+        paginator = require_paginator(client, operation)
+        yield from _safe_paginator(
+            paginator.paginate,
+            account=alias,
+            **operation_kwargs,
+        )
+        return
+
+    op = getattr(client, operation)
+    model = client.meta.service_model.operation_model(operation)
+
+    def _is_pagination_param(name: str) -> bool:
+        lower = name.lower()
+        if any(keyword in lower for keyword in ("token", "marker", "cursor", "position")):
+            return True
+        return "exclusive" in lower and "start" in lower
+
+    def _token_aliases(name: str) -> Set[str]:
+        lower = name.lower()
+        aliases: Set[str] = {lower}
+        stripped = lower
+        prefixes = ("next", "previous", "prev", "last", "starting", "start", "exclusive")
+        changed = True
+        while changed and stripped:
+            changed = False
+            for prefix in prefixes:
+                if stripped.startswith(prefix):
+                    stripped = stripped[len(prefix) :]
+                    changed = True
+        if stripped:
+            aliases.add(stripped)
+        return {alias for alias in aliases if alias}
+
+    input_alias_map: Dict[str, str] = {}
+    ordered_params: List[str] = []
+    if model.input_shape is not None:
+        for name in model.input_shape.members:
+            if not name:
+                continue
+            if not _is_pagination_param(name):
+                continue
+            ordered_params.append(name)
+            for alias_key in _token_aliases(name):
+                input_alias_map.setdefault(alias_key, name)
+
+    output_tokens: List[Tuple[str, Set[str]]] = []
+    if model.output_shape is not None:
+        for name in model.output_shape.members:
+            if not name:
+                continue
+            if not _is_pagination_param(name) and "next" not in name.lower():
+                continue
+            output_tokens.append((name, _token_aliases(name)))
+
+    if not ordered_params:
+        for candidate, aliases in output_tokens:
+            if candidate == "NextToken" or "token" in candidate.lower():
+                ordered_params.append("NextToken")
+                input_alias_map.setdefault("nexttoken", "NextToken")
+                input_alias_map.setdefault("token", "NextToken")
+                break
+
+    token_state: Dict[str, Optional[str]] = {param: None for param in ordered_params}
+
+    def _extract_token_value(raw: Any) -> Optional[str]:
+        if raw in (None, ""):
+            return None
+        if isinstance(raw, dict):
+            for key in (
+                "NextToken",
+                "NextMarker",
+                "Marker",
+                "NextKeyMarker",
+                "NextUploadIdMarker",
+                "NextPageToken",
+                "PaginationToken",
+                "Cursor",
+                "NextCursor",
+                "Position",
+                "NextPosition",
+                "Value",
+                "Id",
+            ):
+                val = raw.get(key)
+                if val not in (None, ""):
+                    return str(val)
+            return None
+        if isinstance(raw, (list, tuple, set)):
+            return None
+        return str(raw)
+
+    while True:
+        call_kwargs = dict(operation_kwargs)
+        for param, value in token_state.items():
+            if value:
+                call_kwargs[param] = value
+
+        page = _safe_aws_call(
+            op,
+            default={},
+            account=alias,
+            **call_kwargs,
+        )
+        if not page:
+            break
+        yield page
+
+        if not token_state:
+            break
+
+        if isinstance(page, dict):
+            current_output_names = {name for name, _ in output_tokens}
+            discovered_tokens: List[Tuple[str, Set[str]]] = []
+            for key in page.keys():
+                if not _is_pagination_param(key):
+                    continue
+                if key not in token_state:
+                    token_state[key] = None
+                alias_key = key.lower()
+                input_alias_map.setdefault(alias_key, key)
+                for alias in _token_aliases(key):
+                    input_alias_map.setdefault(alias, key)
+                if key not in current_output_names:
+                    discovered_tokens.append((key, _token_aliases(key)))
+            if discovered_tokens:
+                output_tokens.extend(discovered_tokens)
+
+        next_tokens: Dict[str, Optional[str]] = {param: None for param in token_state}
+        for output_name, aliases in output_tokens:
+            raw_value = page.get(output_name)
+            value = _extract_token_value(raw_value)
+            if value is None:
+                continue
+
+            matched_param: Optional[str] = None
+            lower_name = output_name.lower()
+            if output_name in token_state:
+                matched_param = output_name
+            elif lower_name in input_alias_map:
+                matched_param = input_alias_map[lower_name]
+            else:
+                for alias_key in aliases:
+                    if alias_key in input_alias_map:
+                        matched_param = input_alias_map[alias_key]
+                        break
+
+            if matched_param and matched_param in next_tokens:
+                next_tokens[matched_param] = value
+
+        if not any(next_tokens.values()):
+            break
+
+        progress_made = False
+        for param, value in next_tokens.items():
+            if value and token_state.get(param) != value:
+                progress_made = True
+                break
+
+        if not progress_made:
+            log(
+                "warning",
+                (
+                    "Pagination tokens for %s did not advance; "
+                    "stopping to avoid an infinite loop"
+                )
+                % operation,
+                account=alias,
+            )
+            break
+
+        token_state.update(next_tokens)
+
+
+def _collect_metric_aggregates(
+    cw_client: BaseClient,
+    *,
+    alias: str,
+    namespace: str,
+    metric_name: str,
+    dimension_name: str,
+    dimension_values: Iterable[str],
+    start_time: datetime,
+    end_time: datetime,
+    period: int,
+    stat: str,
+    aggregator: Callable[[List[float]], float],
+    scan_by: str = "TimestampDescending",
+) -> Dict[str, float]:
+    """Fetch CloudWatch metric data and aggregate values per dimension."""
+
+    values = list(dict.fromkeys(dimension_values))
+    if not values:
+        return {}
+
+    collected: Dict[str, List[float]] = defaultdict(list)
+    for chunk in chunked(values, 500):
+        id_map: Dict[str, str] = {}
+        metric_queries: List[Dict[str, Any]] = []
+        for idx, dim_value in enumerate(chunk):
+            metric_id = f"m{idx:04d}"
+            id_map[metric_id] = dim_value
+            metric_queries.append(
+                {
+                    "Id": metric_id,
+                    "MetricStat": {
+                        "Metric": {
+                            "Namespace": namespace,
+                            "MetricName": metric_name,
+                            "Dimensions": [
+                                {"Name": dimension_name, "Value": dim_value}
+                            ],
+                        },
+                        "Period": period,
+                        "Stat": stat,
+                    },
+                    "ReturnData": True,
+                }
+            )
+
+        token: Optional[str] = None
+        while metric_queries:
+            params: Dict[str, Any] = {
+                "MetricDataQueries": metric_queries,
+                "StartTime": start_time,
+                "EndTime": end_time,
+                "ScanBy": scan_by,
+            }
+            if token:
+                params["NextToken"] = token
+
+            resp = _safe_aws_call(
+                cw_client.get_metric_data,
+                default={},
+                account=alias,
+                **params,
+            )
+            if not resp:
+                break
+
+            for result in resp.get("MetricDataResults", []):
+                dim_value = id_map.get(result.get("Id", ""))
+                if dim_value and result.get("Values"):
+                    collected[dim_value].extend(float(v) for v in result["Values"])
+
+            token = resp.get("NextToken")
+            if not token:
+                break
+
+    return {key: aggregator(vals) for key, vals in collected.items() if vals}
+
+
+def collect_metric_maxima(
+    cw_client: BaseClient,
+    *,
+    alias: str,
+    namespace: str,
+    metric_name: str,
+    dimension_name: str,
+    dimension_values: Iterable[str],
+    start_time: datetime,
+    end_time: datetime,
+    period: int,
+) -> Dict[str, float]:
+    """Return the maximum observed metric for each requested dimension."""
+
+    return _collect_metric_aggregates(
+        cw_client,
+        alias=alias,
+        namespace=namespace,
+        metric_name=metric_name,
+        dimension_name=dimension_name,
+        dimension_values=dimension_values,
+        start_time=start_time,
+        end_time=end_time,
+        period=period,
+        stat="Maximum",
+        aggregator=max,
+    )
+
+
+def collect_metric_sums(
+    cw_client: BaseClient,
+    *,
+    alias: str,
+    namespace: str,
+    metric_name: str,
+    dimension_name: str,
+    dimension_values: Iterable[str],
+    start_time: datetime,
+    end_time: datetime,
+    period: int,
+) -> Dict[str, float]:
+    """Return the sum of metric samples for each requested dimension."""
+
+    return _collect_metric_aggregates(
+        cw_client,
+        alias=alias,
+        namespace=namespace,
+        metric_name=metric_name,
+        dimension_name=dimension_name,
+        dimension_values=dimension_values,
+        start_time=start_time,
+        end_time=end_time,
+        period=period,
+        stat="Sum",
+        aggregator=lambda vals: float(sum(vals)),
+        scan_by="TimestampAscending",
+    )
+
+
+def lightsail_paginate(
+    client: BaseClient,
+    operation: str,
+    alias: str,
+    **kwargs: Any,
+) -> Iterable[Dict[str, Any]]:
+    """Iterate over Lightsail APIs that rely on token-based pagination."""
+
+    op = getattr(client, operation)
+    operation_model = client.meta.service_model.operation_model(operation)
+
+    token_param: Optional[str] = None
+    if operation_model.input_shape is not None:
+        for name in operation_model.input_shape.members:
+            if name and name.lower() in {"pagetoken", "nexttoken"}:
+                token_param = name
+                break
+    if not token_param:
+        token_param = "pageToken"
+
+    output_token_fields: List[str] = []
+    if operation_model.output_shape is not None:
+        for name in operation_model.output_shape.members:
+            if name and name.lower() in {"nextpagetoken", "nexttoken"}:
+                output_token_fields.append(name)
+    if not output_token_fields:
+        output_token_fields = ["nextPageToken", "nextToken"]
+
+    token: Optional[str] = None
+    while True:
+        params = dict(kwargs)
+        if token and token_param:
+            params[token_param] = token
+        resp = _safe_aws_call(op, default={}, account=alias, **params)
+        if not resp:
+            break
+        yield resp
+        token = None
+        for field in output_token_fields:
+            token = resp.get(field)
+            if token:
+                break
+        if not token:
+            break
 
 
 # ─────────────────────── time / formatting helpers ───────────────────────
@@ -542,27 +1105,42 @@ def human_size(size_bytes: Optional[int]) -> str:
     return f"{size:.1f}".rstrip("0").rstrip(".") + f" {unit}"
 
 
-def humanise_schedule(expr: str) -> Tuple[str, str]:
+def humanise_schedule(expr: str, tz: Optional[str] = None) -> Tuple[str, str]:
+    details = ""
     if expr.startswith("rate("):
         val, unit = expr[5:-1].split()
         unit = unit.rstrip("s")
-        return (f"Every {unit}" if val == "1" else f"Every {val} {unit}s"), ""
-    if expr.startswith("at("):
-        return "One-time", expr[3:-1]
-    if expr.startswith("cron("):
+        friendly = f"Every {unit}" if val == "1" else f"Every {val} {unit}s"
+    elif expr.startswith("at("):
+        friendly = "One-time"
+        details = expr[3:-1]
+    elif expr.startswith("cron("):
         parts = expr[5:-1].split()
         if len(parts) == 6:
             m, h, dom, mon, dow, _ = parts
             if dom == "?" and mon == "*" and dow in ("?", "*"):
-                return f"Daily at {h.zfill(2)}:{m.zfill(2)}", ""
-            if dom.isdigit() and mon == "*" and dow in ("?", "*"):
-                return f"Monthly on day {dom} at {h.zfill(2)}:{m.zfill(2)}", ""
+                friendly = f"Daily at {h.zfill(2)}:{m.zfill(2)}"
+            elif dom.isdigit() and mon == "*" and dow in ("?", "*"):
+                friendly = f"Monthly on day {dom} at {h.zfill(2)}:{m.zfill(2)}"
+            else:
+                friendly = ""
+        else:
+            friendly = ""
         cron_expr = expr[5:-1]
-        try:
-            return _cron_desc(cron_expr, locale="en"), ""
-        except TypeError:
-            return _cron_desc(cron_expr), ""
-    return expr, ""
+        if not friendly:
+            try:
+                friendly = _cron_desc(cron_expr, locale="en")
+            except TypeError:
+                friendly = _cron_desc(cron_expr)
+            except ValueError:
+                friendly = cron_expr
+    else:
+        friendly = expr
+
+    if tz:
+        details = f"{details}; Timezone: {tz}" if details else f"Timezone: {tz}"
+
+    return friendly, details
 
 
 def seconds_to_years(sec: Union[int, float, None]) -> str:
@@ -594,27 +1172,44 @@ def _plan_term_seconds(plan: dict) -> Optional[int]:
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _generate_role_session_name(account_id: str) -> str:
+    """Build a unique, policy-compliant session name for AssumeRole."""
+
+    suffix = f"{int(time.time())}-{os.getpid()}-{random.getrandbits(16):04x}"
+    candidate = f"Inventory-{account_id}-{suffix}"
+    sanitized = re.sub(r"[^A-Za-z0-9+=,.@-]", "-", candidate)
+    return sanitized[:64]
+
+
 def assume_role(
     account_id: str,
     role_name: str = DEFAULT_ROLE,
+    *,
     region: str = "us-east-1",
+    external_id: Optional[str] = None,
+    duration_seconds: Optional[int] = None,
 ) -> Optional[boto3.Session]:
     sts = boto3.client("sts", region_name=region, config=RETRY_CONFIG)
+    session_name = _generate_role_session_name(account_id)
+    effective_duration = duration_seconds or ASSUME_ROLE_DURATION
+    effective_duration = max(900, min(int(effective_duration), 43200))
 
-    def _assume() -> Dict[str, str]:
-        return sts.assume_role(
-            RoleArn=f"arn:aws:iam::{account_id}:role/{role_name}",
-            RoleSessionName="InventorySession",
-        )["Credentials"]
+    assume_kwargs: Dict[str, Any] = {
+        "RoleArn": f"arn:aws:iam::{account_id}:role/{role_name}",
+        "RoleSessionName": session_name,
+        "DurationSeconds": effective_duration,
+    }
+    if external_id:
+        assume_kwargs["ExternalId"] = external_id
 
     try:
         creds: Dict[str, str] = {}
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
-                creds = _assume()
+                creds = sts.assume_role(**assume_kwargs)["Credentials"]
                 break
             except ClientError as exc:
-                code = exc.response["Error"]["Code"]
+                code = exc.response["Error"].get("Code", "")
                 if (
                     code in {"AccessDenied", "AccessDeniedException"}
                     or attempt == MAX_ATTEMPTS
@@ -662,8 +1257,13 @@ def fetch_instance_type_specs(
     while pending:
         chunk = pending[:100]
         try:
-            resp = ec2.describe_instance_types(InstanceTypes=chunk)
-            for it in resp["InstanceTypes"]:
+            resp = retry_with_backoff(
+                ec2.describe_instance_types,
+                default={"InstanceTypes": []},
+                account="-",
+                InstanceTypes=chunk,
+            )
+            for it in resp.get("InstanceTypes", []):
                 mib = it["MemoryInfo"]["SizeInMiB"]
                 gib = mib / 1024
                 out[it["InstanceType"]] = {
@@ -679,7 +1279,7 @@ def fetch_instance_type_specs(
             pending = pending[100:]  # finished this batch; move on
 
         except ClientError as exc:
-            code = exc.response["Error"]["Code"]
+            code = exc.response["Error"].get("Code")
             if code != "InvalidInstanceType":
                 raise  # real error – re-raise
 
@@ -716,10 +1316,14 @@ def bucket_region(
     bucket: str,
     region_hint: str,
     session: Optional[boto3.Session] = None,
+    expected_owner: Optional[str] = None,
 ) -> Optional[str]:
     s3 = aws_client("s3", region_hint, session)
     try:
-        loc = s3.get_bucket_location(Bucket=bucket)["LocationConstraint"]
+        params: Dict[str, Any] = {"Bucket": bucket}
+        if expected_owner:
+            params["ExpectedBucketOwner"] = expected_owner
+        loc = s3.get_bucket_location(**params)["LocationConstraint"]
         if loc is None:
             if region_hint.startswith("us-gov"):
                 return "us-gov-west-1"
@@ -732,43 +1336,775 @@ def bucket_region(
     except s3.exceptions.NoSuchBucket:
         logger.warning("Bucket %s no longer exists", bucket)
     except s3.exceptions.ClientError as exc:
-        if exc.response["Error"].get("Code") == "PermanentRedirect":
-            return exc.response["Error"]["BucketRegion"]
+        error = exc.response.get("Error", {})
+        code = error.get("Code", "")
+        if code == "PermanentRedirect":
+            return error.get("BucketRegion")
+        if code == "AuthorizationHeaderMalformed":
+            region = error.get("Region") or exc.response.get("ResponseMetadata", {}).get(
+                "HTTPHeaders", {}
+            ).get("x-amz-bucket-region")
+            if region:
+                return region
+        if code == "IllegalLocationConstraintException":
+            region = exc.response.get("ResponseMetadata", {}).get("HTTPHeaders", {}).get(
+                "x-amz-bucket-region"
+            )
+            if region:
+                return region
         logger.debug("bucket_region(%s) failed: %s", bucket, exc)
     return None
+
+
+def _decompress_manifest_bytes(
+    payload: bytes,
+    key: str,
+    *,
+    account: str = "-",
+    content_encoding: Optional[str] = None,
+) -> Optional[bytes]:
+    """Decompress manifest payloads (gzip, bz2, zstd, lz4, xz, brotli, snappy)."""
+
+    lowered = key.lower()
+    encoding = (content_encoding or "").strip().lower()
+
+    def _warn_missing(pkg: str, algorithm: str) -> None:
+        logger.warning(
+            "Manifest %s requires %s compression but the %s package is not installed",
+            key,
+            algorithm,
+            pkg,
+        )
+
+    try:
+        if lowered.endswith(".gz") or encoding in {"gzip", "x-gzip"}:
+            return gzip.decompress(payload)
+        if lowered.endswith(".bz2") or encoding in {"bzip2", "x-bzip2"}:
+            return bz2.decompress(payload)
+        if lowered.endswith((".zst", ".zstd")) or encoding in {"zst", "zstd"}:
+            if zstd is None:
+                _warn_missing("zstandard", "zstd")
+                return None
+            return zstd.ZstdDecompressor().decompress(payload)
+        if lowered.endswith(".lz4") or encoding == "lz4":
+            if lz4f is None:
+                _warn_missing("lz4", "lz4")
+                return None
+            return lz4f.decompress(payload)
+        if lowered.endswith((".xz", ".lzma")) or encoding in {"xz", "lzma"}:
+            try:
+                return lzma.decompress(payload)
+            except (lzma.LZMAError, ValueError) as exc:
+                logger.warning("Failed to decompress xz manifest %s: %s", key, exc)
+                return None
+        if lowered.endswith((".br", ".brotli")) or encoding in {"br", "brotli"}:
+            if brotli is None:
+                _warn_missing("brotli", "brotli")
+                return None
+            return brotli.decompress(payload)
+        if lowered.endswith(".snappy") or encoding == "snappy":
+            if snappy is None:
+                _warn_missing("python-snappy", "snappy")
+                return None
+            return snappy.decompress(payload)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.warning("Failed to decompress manifest %s: %s", key, exc)
+        return None
+    return payload
+
+
+def _infer_inventory_file_format(
+    key: str,
+) -> Optional[Tuple[str, Optional[str]]]:
+    """Infers inventory file format and compression from the object key."""
+
+    lowered = key.lower()
+    compression: Optional[str] = None
+    for suffix, comp in (
+        (".zst", "ZSTD"),
+        (".zstd", "ZSTD"),
+        (".lz4", "LZ4"),
+        (".br", "BROTLI"),
+        (".brotli", "BROTLI"),
+        (".snappy", "SNAPPY"),
+        (".gz", "GZIP"),
+        (".bz2", "BZIP2"),
+    ):
+        if lowered.endswith(suffix):
+            compression = comp
+            lowered = lowered[: -len(suffix)]
+            break
+    if lowered.endswith(".csv"):
+        return "CSV", compression or "NONE"
+    if lowered.endswith(".parquet"):
+        return "PARQUET", None
+    if lowered.endswith(".orc"):
+        return "ORC", None
+    return None
+
+
+def _as_string_set(value: Any) -> Set[str]:
+    result: Set[str] = set()
+    if value is None:
+        return result
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            if item is not None:
+                result.add(str(item))
+    else:
+        result.add(str(value))
+    return result
+
+
+def _manifest_matches_context(
+    manifest: Dict[str, Any],
+    *,
+    account_id: str,
+    bucket: Optional[str] = None,
+    region: Optional[str] = None,
+    prefix: Optional[str] = None,
+    destination_account_id: Optional[str] = None,
+    destination_bucket: Optional[str] = None,
+) -> bool:
+    manifest_context = manifest.get("manifestContext")
+    if not isinstance(manifest_context, dict):
+        manifest_context = {}
+
+    account_candidates = (
+        _as_string_set(manifest.get("sourceAccountIds"))
+        | _as_string_set(manifest.get("sourceAccountId"))
+        | _as_string_set(manifest_context.get("sourceAccountIds"))
+        | _as_string_set(manifest_context.get("sourceAccountId"))
+    )
+    if account_candidates and str(account_id) not in account_candidates:
+        return False
+
+    if destination_account_id:
+        dest_candidates = (
+            _as_string_set(manifest.get("destinationAccountIds"))
+            | _as_string_set(manifest.get("destinationAccountId"))
+            | _as_string_set(manifest_context.get("destinationAccountIds"))
+            | _as_string_set(manifest_context.get("destinationAccountId"))
+        )
+        if dest_candidates and str(destination_account_id) not in dest_candidates:
+            return False
+
+    if bucket:
+        bucket_candidates = (
+            _as_string_set(manifest.get("sourceBuckets"))
+            | _as_string_set(manifest.get("sourceBucket"))
+            | _as_string_set(manifest_context.get("sourceBuckets"))
+            | _as_string_set(manifest_context.get("sourceBucket"))
+        )
+        if bucket_candidates and bucket not in bucket_candidates:
+            return False
+
+    if destination_bucket:
+        def _normalize_bucket(value: str) -> str:
+            if value.startswith("arn:"):
+                arn_parts = _split_s3_arn(value)
+                if arn_parts:
+                    return arn_parts[0]
+            return value
+
+        dest_bucket_candidates = {
+            _normalize_bucket(candidate)
+            for candidate in (
+                _as_string_set(manifest.get("destinationBuckets"))
+                | _as_string_set(manifest.get("destinationBucket"))
+                | _as_string_set(manifest_context.get("destinationBuckets"))
+                | _as_string_set(manifest_context.get("destinationBucket"))
+            )
+            if candidate
+        }
+        if dest_bucket_candidates and destination_bucket not in dest_bucket_candidates:
+            return False
+
+    if region:
+        region_candidates = (
+            _as_string_set(manifest.get("sourceRegions"))
+            | _as_string_set(manifest.get("sourceRegion"))
+            | _as_string_set(manifest_context.get("sourceRegions"))
+            | _as_string_set(manifest_context.get("sourceRegion"))
+        )
+        if region_candidates and region not in region_candidates:
+            return False
+
+    if prefix:
+        normalized_prefix = prefix.rstrip("/")
+        prefix_candidates = {
+            candidate.rstrip("/")
+            for candidate in (
+                _as_string_set(manifest.get("sourcePrefixes"))
+                | _as_string_set(manifest.get("sourcePrefix"))
+                | _as_string_set(manifest_context.get("sourcePrefixes"))
+                | _as_string_set(manifest_context.get("sourcePrefix"))
+            )
+            if candidate
+        }
+        if prefix_candidates and normalized_prefix not in prefix_candidates:
+            return False
+
+    return True
+
+
+def _parse_manifest_timestamp(value: Any) -> datetime:
+    """Best-effort conversion of manifest timestamps to aware datetimes."""
+
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        if candidate.endswith("Z"):
+            candidate = f"{candidate[:-1]}+00:00"
+        elif len(candidate) > 5 and candidate[-3] != ":" and candidate[-5] in {"+", "-"}:
+            candidate = f"{candidate[:-2]}:{candidate[-2:]}"
+        try:
+            return datetime.fromisoformat(candidate)
+        except ValueError:
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _split_s3_arn(arn: str) -> Optional[Tuple[str, str]]:
+    """Extract the bucket/access point identifier and key from S3-style ARNs."""
+
+    if not isinstance(arn, str) or not arn.startswith("arn:"):
+        return None
+    parts = arn.split(":", 5)
+    if len(parts) < 6:
+        return None
+    service = parts[2]
+    resource = parts[5]
+    if not resource:
+        return None
+
+    if service == "s3":
+        segments = [segment for segment in resource.split("/") if segment]
+        if not segments:
+            return None
+        if segments[0] in {"accesspoint", "mrap", "mraccesspoint"}:
+            if "object" in segments:
+                idx = segments.index("object")
+                identifier = "/".join(segments[:idx])
+                key = "/".join(segments[idx + 1 :])
+                return (identifier, key)
+            return ("/".join(segments), "")
+        bucket = segments[0]
+        key = "/".join(segments[1:]) if len(segments) > 1 else ""
+        return (bucket, key) if bucket else None
+
+    if service in {"s3express", "s3-outposts", "s3-object-lambda"}:
+        segments = [segment for segment in resource.split("/") if segment]
+        if not segments:
+            return None
+        key = ""
+        bucket_name: Optional[str] = None
+
+        if service == "s3express":
+            bucket_name = segments[0]
+            if len(segments) > 1 and segments[1] == "object":
+                key = "/".join(segments[2:])
+            else:
+                key = "/".join(segments[1:])
+        else:
+            if "object" not in segments:
+                return None
+            idx = segments.index("object")
+            key = "/".join(segments[idx + 1 :])
+            if service == "s3-outposts":
+                if "bucket" in segments[:idx]:
+                    b_idx = segments.index("bucket")
+                    if b_idx + 1 < idx:
+                        bucket_name = segments[b_idx + 1]
+            elif service == "s3-object-lambda" and idx >= 1:
+                bucket_name = segments[idx - 1]
+        if not bucket_name:
+            bucket_name = segments[0]
+        return (bucket_name, key)
+
+    return None
+
+
+def _first_int(data: Dict[str, Any], keys: Iterable[str]) -> Optional[int]:
+    for key in keys:
+        if key in data:
+            value = data.get(key)
+            if isinstance(value, (int, float)):
+                return int(value)
+            if isinstance(value, str):
+                stripped = value.strip()
+                if not stripped:
+                    continue
+                try:
+                    return int(float(stripped))
+                except ValueError:
+                    continue
+    return None
+
+
+def _parse_select_totals(payload_chunks: Iterable[bytes]) -> Tuple[int, int]:
+    buffer = b"".join(payload_chunks)
+    if not buffer:
+        return (0, 0)
+
+    totals: Tuple[int, int] = (0, 0)
+    for line in buffer.decode("utf-8", "ignore").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        if isinstance(record, dict):
+            size = _first_int(
+                record,
+                (
+                    "total_bytes",
+                    "totalStorageBytes",
+                    "TotalStorageBytes",
+                    "bucket_size_bytes",
+                    "bucketSizeBytes",
+                    "size",
+                    "_1",
+                ),
+            )
+            count = _first_int(
+                record,
+                (
+                    "object_count",
+                    "objectCount",
+                    "TotalObjectCount",
+                    "count",
+                    "_2",
+                ),
+            )
+            if size is not None or count is not None:
+                totals = (
+                    size if size is not None else totals[0],
+                    count if count is not None else totals[1],
+                )
+        elif isinstance(record, list) and len(record) >= 2:
+            try:
+                totals = (int(record[0]), int(record[1]))
+            except (TypeError, ValueError):
+                continue
+
+    return totals
 
 
 @lru_cache(maxsize=STORAGE_LENS_CACHE_MAX)
 def storage_lens_metrics(
     bucket: str,
     region: str,
+    account_id: str,
     session: Optional[boto3.Session] = None,
 ) -> Tuple[Optional[int], Optional[int]]:
     try:
-        sl = aws_client("s3control", region, session)
-        acct = aws_client("sts", region, session).get_caller_identity()["Account"]
-        cfgs = []
-        nxt = None
-        while True:
-            if nxt:
-                resp = sl.list_storage_lens_configurations(AccountId=acct, NextToken=nxt)
-            else:
-                resp = sl.list_storage_lens_configurations(AccountId=acct)
-            cfgs.extend(resp.get("StorageLensConfigurationList", []))
-            nxt = resp.get("NextToken")
-            if not nxt:
-                break
-        if not cfgs:
+        s3control = aws_client("s3control", "us-east-1", session)
+
+        configs: List[Dict[str, Any]] = []
+        for page in _iterate_operation_pages(
+            s3control,
+            "list_storage_lens_configurations",
+            account_id,
+            AccountId=account_id,
+        ):
+            configs.extend(page.get("StorageLensConfigurationList", []))
+
+        if not configs:
+            logger.debug(
+                "No S3 Storage Lens configurations found for account %s", account_id
+            )
             return None, None
-        cfg = sl.get_storage_lens_configuration(
-            AccountId=acct,
-            ConfigId=cfgs[0]["Id"],
-        )["StorageLensConfiguration"]
-        metrics = cfg["AccountLevel"]["BucketLevel"]["AdvancedMetrics"]
-        return metrics.get("TotalStorageBytes"), metrics.get("TotalObjectCount")
+
+        export_candidates: List[Tuple[str, Dict[str, Any]]] = []
+        for summary in configs:
+            config_id = summary.get("Id")
+            full_wrapper = _safe_aws_call(
+                s3control.get_storage_lens_configuration,
+                default={"StorageLensConfiguration": {}},
+                account=account_id,
+                AccountId=account_id,
+                ConfigId=config_id,
+            )
+            full_cfg = full_wrapper.get("StorageLensConfiguration", {})
+            if full_cfg.get("IsEnabled") and full_cfg.get("S3BucketDestination"):
+                export_candidates.append((config_id, full_cfg["S3BucketDestination"]))
+
+        if not export_candidates:
+            logger.debug(
+                "No Storage Lens configuration with S3 export destination available"
+            )
+            return None, None
+
+        manifest_suffixes = (
+            "manifest.json",
+            "manifest.json.gz",
+            "manifest.json.zst",
+            "manifest.json.zstd",
+            "manifest.json.bz2",
+            "manifest.json.lz4",
+            "manifest.json.xz",
+            "manifest.json.br",
+            "manifest.json.brotli",
+            "manifest.json.snappy",
+        )
+
+        for config_id, export_cfg in export_candidates:
+            export_bucket_spec = str(export_cfg.get("Arn") or "")
+            if not export_bucket_spec:
+                continue
+            export_bucket_prefix_hint = ""
+            if export_bucket_spec.startswith("arn:"):
+                parsed_export = _split_s3_arn(export_bucket_spec)
+            else:
+                parsed_export = None
+            if parsed_export:
+                export_bucket_name, export_bucket_prefix_hint = parsed_export
+            else:
+                export_bucket_name = export_bucket_spec.split(":::")[-1]
+                if not export_bucket_name:
+                    export_bucket_name = export_bucket_spec.split(":")[-1]
+            if not export_bucket_name:
+                continue
+            export_prefix_raw = str(export_cfg.get("Prefix") or "")
+            prefix_components = [
+                part.strip("/")
+                for part in (export_bucket_prefix_hint, export_prefix_raw)
+                if part
+            ]
+            export_prefix = "/".join(prefix_components)
+            export_account_id = str(export_cfg.get("AccountId") or account_id)
+            export_format = (export_cfg.get("Format", "CSV") or "CSV").upper()
+            export_compression = (export_cfg.get("Compression") or "GZIP").upper()
+
+            export_bucket_param = (
+                export_bucket_spec
+                if export_bucket_spec.startswith("arn:")
+                else export_bucket_name
+            )
+
+            if export_format not in {"CSV", "PARQUET", "ORC"}:
+                logger.debug(
+                    "Storage Lens export uses unsupported format %s; skipping", export_format
+                )
+                continue
+
+            dest_region = bucket_region(
+                export_bucket_name, region, session, expected_owner=export_account_id
+            )
+            if not dest_region:
+                continue
+            s3_dest = aws_client("s3", dest_region, session)
+
+            prefix_parts = [
+                export_prefix.rstrip("/") if export_prefix else "",
+                export_account_id or "",
+                config_id or "",
+            ]
+            manifest_prefix = "/".join(part for part in prefix_parts if part)
+            if manifest_prefix:
+                manifest_prefix = f"{manifest_prefix.rstrip('/')}/"
+
+            paginator = require_paginator(s3_dest, "list_objects_v2")
+            manifests: List[Dict[str, Any]] = []
+            for page in _safe_paginator(
+                paginator.paginate,
+                account=account_id,
+                Bucket=export_bucket_param,
+                Prefix=manifest_prefix,
+                ExpectedBucketOwner=export_account_id,
+            ):
+                manifests.extend(page.get("Contents", []))
+
+            manifest_objects = [
+                m
+                for m in manifests
+                if any(m.get("Key", "").endswith(sfx) for sfx in manifest_suffixes)
+            ]
+
+            parsed_manifests: List[
+                Tuple[Tuple[int, datetime], Dict[str, Any], Dict[str, Any]]
+            ] = []
+
+            for manifest_obj in manifest_objects:
+                manifest_resp = _safe_aws_call(
+                    s3_dest.get_object,
+                    default={},
+                    account=account_id,
+                    Bucket=export_bucket_param,
+                    Key=manifest_obj.get("Key", ""),
+                    ExpectedBucketOwner=export_account_id,
+                )
+                if not manifest_resp:
+                    continue
+                manifest_body = manifest_resp.get("Body")
+                if manifest_body is None:
+                    continue
+                try:
+                    manifest_bytes = manifest_body.read()
+                finally:
+                    try:
+                        manifest_body.close()
+                    except Exception:
+                        pass
+                manifest_bytes = _decompress_manifest_bytes(
+                    manifest_bytes,
+                    manifest_obj.get("Key", ""),
+                    account=account_id,
+                    content_encoding=(
+                        manifest_resp.get("ContentEncoding")
+                        or manifest_resp.get("ResponseMetadata", {})
+                        .get("HTTPHeaders", {})
+                        .get("content-encoding")
+                    ),
+                )
+                if manifest_bytes is None:
+                    continue
+                try:
+                    manifest_data = json.loads(manifest_bytes.decode("utf-8-sig"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    logger.debug(
+                        "Storage Lens manifest %s could not be parsed: %s",
+                        manifest_obj.get("Key", ""),
+                        exc,
+                    )
+                    continue
+
+                if not _manifest_matches_context(
+                    manifest_data,
+                    account_id=account_id,
+                    bucket=bucket,
+                    region=region,
+                    destination_account_id=export_account_id,
+                    destination_bucket=export_bucket_name,
+                ):
+                    logger.debug(
+                        "Skipping Storage Lens manifest for unexpected account/bucket/region"
+                    )
+                    continue
+
+                timestamp_candidates = [
+                    manifest_data.get("reportCreationTime"),
+                    manifest_data.get("creationTimestamp"),
+                    manifest_data.get("manifestCreationTimestamp"),
+                    (manifest_data.get("reportContext") or {}).get("reportCreationTime"),
+                    manifest_obj.get("LastModified"),
+                ]
+                creation_ts = max(
+                    (
+                        _parse_manifest_timestamp(value)
+                        for value in timestamp_candidates
+                        if value is not None
+                    ),
+                    default=datetime.min.replace(tzinfo=timezone.utc),
+                )
+                is_latest = 1 if manifest_data.get("isLatest", True) else 0
+                parsed_manifests.append(((is_latest, creation_ts), manifest_data, manifest_obj))
+
+            if not parsed_manifests:
+                continue
+
+            parsed_manifests.sort(key=lambda item: item[0], reverse=True)
+
+            for _, manifest_data, manifest_obj in parsed_manifests:
+                candidate_files: List[
+                    Tuple[str, Optional[datetime], Optional[str], Optional[str]]
+                ] = []
+                for entry in manifest_data.get("files", []):
+                    key = entry.get("key")
+                    if not key:
+                        continue
+                    modified_hint = entry.get("lastModified") or entry.get("LastModified")
+                    modified_dt: Optional[datetime] = None
+                    if isinstance(modified_hint, datetime):
+                        modified_dt = modified_hint
+                    elif isinstance(modified_hint, str):
+                        try:
+                            modified_dt = datetime.fromisoformat(
+                                modified_hint.replace("Z", "+00:00")
+                            )
+                        except ValueError:
+                            modified_dt = None
+                    if modified_dt is None:
+                        modified_dt = manifest_obj.get("LastModified")
+
+                    fmt_hint = entry.get("format")
+                    if isinstance(fmt_hint, str):
+                        fmt_hint = fmt_hint.upper() or None
+                    else:
+                        fmt_hint = None
+
+                    comp_raw = entry.get("compression")
+                    comp_hint: Optional[str] = None
+                    if isinstance(comp_raw, str):
+                        comp_hint = comp_raw.upper() or None
+                    elif isinstance(comp_raw, (list, tuple, set)):
+                        for item in comp_raw:
+                            if item:
+                                comp_hint = str(item).upper()
+                                break
+                    elif comp_raw is not None:
+                        comp_hint = str(comp_raw).upper()
+
+                    candidate_files.append((key, modified_dt, fmt_hint, comp_hint))
+
+                if not candidate_files:
+                    for location in manifest_data.get("fileLocations", []):
+                        object_arn = location.get("objectArn")
+                        arn_parts = _split_s3_arn(object_arn) if object_arn else None
+                        if arn_parts:
+                            bucket_part, key_part = arn_parts
+                            if bucket_part and bucket_part != export_bucket_name:
+                                continue
+                            if key_part:
+                                candidate_files.append((key_part, None, None, None))
+                        for uri in location.get("URIPrefixes", []):
+                            if uri.startswith("s3://"):
+                                bucket_part, _, key_part = uri[5:].partition("/")
+                                if bucket_part and bucket_part != export_bucket_name:
+                                    continue
+                                prefix_hint = key_part
+                            else:
+                                prefix_hint = uri
+                            prefix_hint = prefix_hint.lstrip("/")
+                            for page in _safe_paginator(
+                                paginator.paginate,
+                                account=account_id,
+                                Bucket=export_bucket_param,
+                                Prefix=prefix_hint,
+                                ExpectedBucketOwner=export_account_id,
+                            ):
+                                for obj in page.get("Contents", []):
+                                    candidate_files.append(
+                                        (
+                                            obj.get("Key", ""),
+                                            obj.get("LastModified"),
+                                            None,
+                                            None,
+                                        )
+                                    )
+
+                if not candidate_files:
+                    continue
+
+                chosen_key: Optional[str] = None
+                chosen_format = export_format
+                chosen_compression: Optional[str] = export_compression
+                seen_candidates: set[str] = set()
+                for key, modified, fmt_hint, comp_hint in sorted(
+                    candidate_files,
+                    key=lambda item: item[1]
+                    or datetime.min.replace(tzinfo=timezone.utc),
+                    reverse=True,
+                ):
+                    if not key or key in seen_candidates:
+                        continue
+                    fmt_candidate = (
+                        fmt_hint or chosen_format or export_format or "CSV"
+                    ).upper()
+                    comp_candidate = (comp_hint or chosen_compression or "NONE")
+                    inferred = _infer_inventory_file_format(key)
+                    if inferred:
+                        inferred_fmt, inferred_comp = inferred
+                        fmt_candidate = inferred_fmt
+                        if inferred_fmt == "CSV":
+                            comp_candidate = inferred_comp or "NONE"
+                        else:
+                            comp_candidate = inferred_comp
+                    if fmt_candidate not in {"CSV", "PARQUET", "ORC"}:
+                        fmt_candidate = export_format
+                    if fmt_candidate in {"PARQUET", "ORC"}:
+                        comp_candidate = None
+                    elif comp_candidate and comp_candidate not in {
+                        "NONE",
+                        "GZIP",
+                        "BZIP2",
+                        "LZ4",
+                        "ZSTD",
+                    }:
+                        logger.debug(
+                            "Skipping Storage Lens fragment %s due to unsupported compression %s",
+                            key,
+                            comp_candidate,
+                        )
+                        continue
+                    chosen_key = key
+                    chosen_format = fmt_candidate or export_format
+                    chosen_compression = comp_candidate
+                    seen_candidates.add(key)
+                    break
+
+                if not chosen_key:
+                    continue
+
+                sql = (
+                    "SELECT COALESCE(s.\"total_storage_bytes\", s.\"totalStorageBytes\") AS total_bytes, "
+                    "COALESCE(s.\"object_count\", s.\"objectCount\") AS object_count "
+                    "FROM S3Object s WHERE COALESCE(s.\"bucket_name\", s.\"bucketName\") = '"
+                    + bucket
+                    + "'"
+                )
+                if chosen_format == "CSV":
+                    compression_value = (chosen_compression or "NONE").upper()
+                    if compression_value not in {"NONE", "GZIP", "BZIP2", "LZ4", "ZSTD"}:
+                        logger.debug(
+                            "Skipping Storage Lens manifest %s due to unsupported compression %s",
+                            chosen_key,
+                            compression_value,
+                        )
+                        continue
+                    input_serialization = {
+                        "CSV": {"FileHeaderInfo": "USE"},
+                        "CompressionType": compression_value,
+                    }
+                elif chosen_format == "PARQUET":
+                    input_serialization = {"Parquet": {}}
+                else:
+                    input_serialization = {"ORC": {}}
+
+                select_kwargs: Dict[str, Any] = {
+                    "Bucket": export_bucket,
+                    "Key": chosen_key,
+                    "ExpressionType": "SQL",
+                    "Expression": sql,
+                    "InputSerialization": input_serialization,
+                    "OutputSerialization": {"JSON": {"RecordDelimiter": "\n"}},
+                }
+                if export_account_id:
+                    select_kwargs["ExpectedBucketOwner"] = export_account_id
+                resp = _safe_aws_call(
+                    s3_dest.select_object_content,
+                    account=account_id,
+                    **select_kwargs,
+                )
+
+                payload = [
+                    event["Records"]["Payload"]
+                    for event in resp.get("Payload", [])
+                    if "Records" in event and "Payload" in event["Records"]
+                ]
+                if payload:
+                    return _parse_select_totals(payload)
+
+        return None, None
     except Exception as exc:
         logger.debug("StorageLens lookup failed for %s: %s", bucket, exc)
-        return None, None
+    return None, None
+
 
 
 @lru_cache(maxsize=1)
@@ -779,8 +2115,13 @@ def get_lightsail_supported_regions(session: boto3.Session, account: str) -> set
     """
     try:
         ls_client = aws_client("lightsail", "us-east-1", session)
-        regions_resp = ls_client.get_regions(includeAvailabilityZones=False)
-        return {r["name"] for r in regions_resp.get("regions", [])}
+        regions_resp = _safe_aws_call(
+            ls_client.get_regions,
+            default={"regions": []},
+            account=account,
+            includeAvailabilityZones=False,
+        )
+        return {r.get("name", "") for r in regions_resp.get("regions", []) if r.get("name")}
     except Exception as e:
         log(
             "warning",
@@ -835,85 +2176,450 @@ def _s3_select_sum_and_count(
     key: str,
     *,
     account: str = "-",
+    compression: Optional[str] = "GZIP",
+    file_format: str = "CSV",
+    expected_owner: Optional[str] = None,
 ) -> tuple[int, int]:
     sql = (
         'SELECT CAST(sum(cast(s."Size" AS int)) AS bigint), '
         "       CAST(count(1) AS bigint) "
         "FROM S3Object s"
     )
+
+    fmt = (file_format or "CSV").upper()
+    comp = (compression or "NONE").upper()
+    if fmt not in {"CSV", "PARQUET", "ORC"}:
+        log(
+            "debug",
+            f"Unsupported S3 inventory format '{fmt}' for {bucket}; skipping",
+            account=account,
+        )
+        return 0, 0
+
+    if fmt == "CSV":
+        supported = {"NONE", "GZIP", "BZIP2", "LZ4", "ZSTD"}
+        if comp not in supported:
+            log(
+                "debug",
+                f"Unsupported compression '{comp}' for inventory file {key}; skipping",
+                account=account,
+            )
+            return 0, 0
+        input_serialization: Dict[str, Any] = {
+            "CSV": {"FileHeaderInfo": "USE"},
+            "CompressionType": comp,
+        }
+    elif fmt == "PARQUET":
+        input_serialization = {"Parquet": {}}
+    else:
+        input_serialization = {"ORC": {}}
+
+    call_kwargs: Dict[str, Any] = {
+        "Bucket": bucket,
+        "Key": key,
+        "ExpressionType": "SQL",
+        "Expression": sql,
+        "InputSerialization": input_serialization,
+        "OutputSerialization": {"JSON": {"RecordDelimiter": "\n"}},
+    }
+    if expected_owner:
+        call_kwargs["ExpectedBucketOwner"] = expected_owner
     resp = _safe_aws_call(
         s3.select_object_content,
         account=account,
         retry=True,
-        Bucket=bucket,
-        Key=key,
-        ExpressionType="SQL",
-        Expression=sql,
-        InputSerialization={
-            "CSV": {"FileHeaderInfo": "USE"},
-            "CompressionType": "NONE",
-        },
-        OutputSerialization={"JSON": {"RecordDelimiter": "\n"}},
+        **call_kwargs,
     )
-    buf = b""
-    for ev in resp.get("Payload", []):
-        if rec := ev.get("Records"):
-            buf += rec["Payload"]
-    return tuple(json.loads(buf.decode()) if buf else (0, 0))
+
+    payload_chunks = [
+        ev.get("Records", {}).get("Payload")
+        for ev in resp.get("Payload", [])
+        if "Records" in ev and ev.get("Records", {}).get("Payload")
+    ]
+    if not payload_chunks:
+        return 0, 0
+
+    return _parse_select_totals(payload_chunks)
 
 
 @lru_cache(maxsize=STORAGE_LENS_CACHE_MAX)
 def inventory_metrics(
     bucket: str,
     region_hint: str,
+    account_id: str,
     session: Optional[boto3.Session] = None,
 ) -> tuple[Optional[int], Optional[int]]:
     try:
         inv = aws_client("s3", region_hint, session)
-        cfgs = inv.list_bucket_inventory_configurations(Bucket=bucket).get(
-            "InventoryConfigurationList", []
-        )
-        if not cfgs:
+
+        cfgs: List[Dict[str, Any]] = []
+        cont: Optional[str] = None
+        while True:
+            params = {"ContinuationToken": cont} if cont else {}
+            resp = _safe_aws_call(
+                inv.list_bucket_inventory_configurations,
+                default={"InventoryConfigurationList": []},
+                Bucket=bucket,
+                ExpectedBucketOwner=account_id,
+                account=account_id,
+                **params,
+            )
+            cfgs.extend(resp.get("InventoryConfigurationList", []))
+            cont = resp.get("NextContinuationToken")
+            if not cont:
+                break
+
+        enabled_cfgs = [cfg for cfg in cfgs if cfg.get("IsEnabled")]
+        if not enabled_cfgs:
+            log(
+                "debug",
+                "No enabled S3 inventory configuration found for this bucket; skipping metrics lookup.",
+                account=account_id,
+            )
             return None, None
-        cfg = cfgs[0]
-        inv_id = cfg["Id"]
-        prefix = cfg["Destination"]["S3BucketDestination"].get("Prefix", "").rstrip("/")
-        date_part = (datetime.now(timezone.utc) - timedelta(days=1)).strftime(
-            "%Y-%m-%d"
-        )
-        manifest_key = f"{prefix or inv_id}/{date_part}/manifest.json"
-        dest = cfg["Destination"]["S3BucketDestination"]["Bucket"].split(":::")[-1]
-        dest_region = bucket_region(dest, region_hint, session)
-        s3_dest = aws_client("s3", dest_region, session)
-        manifest = json.loads(
-            s3_dest.get_object(Bucket=dest, Key=manifest_key)["Body"].read()
-        )
-        total_bytes = total_objects = 0
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            futures = [
-                pool.submit(
-                    _s3_select_sum_and_count,
-                    s3_dest,
-                    dest,
-                    file_["key"],
+
+        cfgs = enabled_cfgs
+
+        def _cfg_sort_key(cfg: Dict[str, Any]) -> Tuple[int, datetime]:
+            timestamp_candidates = [
+                cfg.get("LastUpdateTime"),
+                cfg.get("LastModifiedDate"),
+                cfg.get("CreationTimestamp"),
+            ]
+            ts = next(
+                (
+                    value
+                    for value in timestamp_candidates
+                    if isinstance(value, datetime)
+                ),
+                datetime.min.replace(tzinfo=timezone.utc),
+            )
+            return (1 if cfg.get("IsEnabled") else 0, ts)
+
+        configs_to_try = sorted(cfgs, key=_cfg_sort_key, reverse=True)
+
+        metrics: Optional[Tuple[int, int]] = None
+        for cfg in configs_to_try:
+            dest_info = cfg.get("Destination", {}).get("S3BucketDestination", {})
+            dest_spec = str(dest_info.get("Bucket") or "")
+            if not dest_spec:
+                continue
+            dest_prefix_hint = ""
+            if dest_spec.startswith("arn:"):
+                parsed_dest = _split_s3_arn(dest_spec)
+            else:
+                parsed_dest = None
+            if parsed_dest:
+                dest_bucket_name, dest_prefix_hint = parsed_dest
+            else:
+                dest_bucket_name = dest_spec.split(":::")[-1]
+                if not dest_bucket_name:
+                    dest_bucket_name = dest_spec.split(":")[-1]
+            if not dest_bucket_name:
+                continue
+            dest_account_id = str(dest_info.get("AccountId") or account_id)
+            dest_prefix_raw = str(dest_info.get("Prefix") or "")
+            prefix_parts = [
+                part.strip("/")
+                for part in (dest_prefix_hint, dest_prefix_raw)
+                if part
+            ]
+            dest_prefix = "/".join(prefix_parts)
+            inventory_format = (dest_info.get("Format", "CSV") or "CSV").upper()
+            inventory_compression = (dest_info.get("Compression") or "GZIP").upper()
+            dest_bucket_param = (
+                dest_spec if dest_spec.startswith("arn:") else dest_bucket_name
+            )
+            if inventory_format not in {"CSV", "PARQUET", "ORC"}:
+                log(
+                    "debug",
+                    f"Skipping S3 inventory metrics for {bucket}: unsupported format {inventory_format}",
+                )
+                continue
+
+            filter_cfg = cfg.get("Filter", {})
+            source_prefix = ""
+            if isinstance(filter_cfg, dict):
+                source_prefix = str(filter_cfg.get("Prefix") or "")
+
+            key_format = dest_info.get("KeyFormat", {})
+            key_format_type = ""
+            if isinstance(key_format, dict):
+                key_format_type = (key_format.get("Type") or "").upper()
+            elif isinstance(key_format, str):
+                key_format_type = key_format.upper()
+
+            if "PARTITION" in key_format_type:
+                components: List[str] = []
+                if dest_prefix:
+                    components.append(dest_prefix.rstrip("/"))
+                if account_id:
+                    components.append(f"source-account={account_id}")
+                if region_hint:
+                    components.append(f"source-region={region_hint}")
+                if source_prefix:
+                    components.append(f"source-prefix={source_prefix.rstrip('/')}")
+                components.append(f"source-bucket={bucket}")
+                inventory_prefix = "/".join(components)
+                if inventory_prefix:
+                    inventory_prefix = f"{inventory_prefix.rstrip('/')}/"
+            else:
+                inventory_prefix = (
+                    f"{dest_prefix.rstrip('/')}/{bucket}/" if dest_prefix else f"{bucket}/"
+                )
+
+            dest_region = bucket_region(
+                dest_bucket_name, region_hint, session, expected_owner=dest_account_id
+            )
+            if not dest_region:
+                continue
+            s3_dest = aws_client("s3", dest_region, session)
+
+            manifests: List[Dict[str, Any]] = []
+            paginator = require_paginator(s3_dest, "list_objects_v2")
+            for page in _safe_paginator(
+                paginator.paginate,
+                account=bucket,
+                Bucket=dest_bucket_param,
+                Prefix=inventory_prefix,
+                ExpectedBucketOwner=dest_account_id,
+            ):
+                manifests.extend(page.get("Contents", []))
+
+            manifest_suffixes = (
+                "manifest.json",
+                "manifest.json.gz",
+                "manifest.json.zst",
+                "manifest.json.zstd",
+                "manifest.json.bz2",
+                "manifest.json.lz4",
+                "manifest.json.xz",
+                "manifest.json.br",
+                "manifest.json.brotli",
+                "manifest.json.snappy",
+            )
+            manifest_objects = [
+                m
+                for m in manifests
+                if any(m.get("Key", "").endswith(sfx) for sfx in manifest_suffixes)
+            ]
+
+            parsed_manifests: List[Tuple[Tuple[int, datetime], Dict[str, Any]]] = []
+            for manifest_obj in manifest_objects:
+                manifest_resp = _safe_aws_call(
+                    s3_dest.get_object,
+                    default={},
+                    Bucket=dest_bucket_param,
+                    Key=manifest_obj.get("Key", ""),
+                    ExpectedBucketOwner=dest_account_id,
                     account=bucket,
                 )
-                for file_ in manifest["files"]
-            ]
-            for fut in as_completed(futures):
-                b, o = fut.result()
-                total_bytes += b
-                total_objects += o
-        return total_bytes, total_objects
-    except Exception as exc:
-        logger.warning("Inventory metrics (S3 Select) failed for %s: %s", bucket, exc)
-        return None, None
+                if not manifest_resp:
+                    continue
+                manifest_body = manifest_resp.get("Body")
+                if manifest_body is None:
+                    continue
+                try:
+                    manifest_bytes = manifest_body.read()
+                finally:
+                    try:
+                        manifest_body.close()
+                    except Exception:
+                        pass
+                manifest_bytes = _decompress_manifest_bytes(
+                    manifest_bytes,
+                    manifest_obj.get("Key", ""),
+                    account=account_id,
+                    content_encoding=(
+                        manifest_resp.get("ContentEncoding")
+                        or manifest_resp.get("ResponseMetadata", {})
+                        .get("HTTPHeaders", {})
+                        .get("content-encoding")
+                    ),
+                )
+                if manifest_bytes is None:
+                    continue
+                try:
+                    manifest = json.loads(manifest_bytes.decode("utf-8-sig"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    logger.debug(
+                        "Inventory manifest %s could not be parsed: %s",
+                        manifest_obj.get("Key", ""),
+                        exc,
+                    )
+                    continue
 
+                if not _manifest_matches_context(
+                    manifest,
+                    account_id=account_id,
+                    bucket=bucket,
+                    region=region_hint,
+                    prefix=source_prefix or None,
+                    destination_account_id=dest_account_id,
+                    destination_bucket=dest_bucket_name,
+                ):
+                    logger.debug(
+                        "Skipping inventory manifest that does not match account %s bucket %s region %s prefix %s",
+                        account_id,
+                        bucket,
+                        region_hint,
+                        source_prefix,
+                    )
+                    continue
+
+                timestamp_candidates = [
+                    manifest.get("manifestCreationTimestamp"),
+                    manifest.get("creationTimestamp"),
+                    manifest.get("reportCreationTime"),
+                    (manifest.get("reportContext") or {}).get("reportCreationTime"),
+                    manifest_obj.get("LastModified"),
+                ]
+                creation_ts = max(
+                    (
+                        _parse_manifest_timestamp(value)
+                        for value in timestamp_candidates
+                        if value is not None
+                    ),
+                    default=datetime.min.replace(tzinfo=timezone.utc),
+                )
+                is_latest = 1 if manifest.get("isLatest", True) else 0
+                parsed_manifests.append(((is_latest, creation_ts), manifest))
+
+            if not parsed_manifests:
+                continue
+
+            parsed_manifests.sort(key=lambda item: item[0], reverse=True)
+
+            for _, manifest in parsed_manifests:
+                candidate_files: List[Tuple[str, Optional[str], Optional[str]]] = []
+                for entry in manifest.get("files", []):
+                    key = entry.get("key")
+                    if not key:
+                        continue
+                    fmt_hint = entry.get("format")
+                    if isinstance(fmt_hint, str):
+                        fmt_hint = fmt_hint.upper() or None
+                    else:
+                        fmt_hint = None
+                    comp_hint = entry.get("compression")
+                    if isinstance(comp_hint, str):
+                        comp_hint = comp_hint.upper() or None
+                    else:
+                        comp_hint = None
+                    candidate_files.append((key, fmt_hint, comp_hint))
+
+                if not candidate_files:
+                    for location in manifest.get("fileLocations", []):
+                        object_arn = location.get("objectArn")
+                        arn_parts = _split_s3_arn(object_arn) if object_arn else None
+                        if arn_parts:
+                            bucket_part, key_part = arn_parts
+                            if bucket_part and bucket_part != dest_bucket_name:
+                                continue
+                            if key_part:
+                                candidate_files.append((key_part, None, None))
+                        for uri in location.get("URIPrefixes", []):
+                            if uri.startswith("s3://"):
+                                bucket_part, _, key_part = uri[5:].partition("/")
+                                if bucket_part and bucket_part != dest_bucket_name:
+                                    continue
+                                prefix_hint = key_part
+                            else:
+                                prefix_hint = uri
+                            prefix_hint = prefix_hint.lstrip("/")
+                            for page in _safe_paginator(
+                                paginator.paginate,
+                                account=bucket,
+                                Bucket=dest_bucket_param,
+                                Prefix=prefix_hint,
+                                ExpectedBucketOwner=dest_account_id,
+                            ):
+                                for obj in page.get("Contents", []):
+                                    candidate_files.append((obj.get("Key", ""), None, None))
+
+                if not candidate_files:
+                    continue
+
+                normalized: Dict[str, Tuple[str, Optional[str]]] = {}
+                seen_keys: set[str] = set()
+                for key, fmt_hint, comp_hint in candidate_files:
+                    if not key or key in seen_keys:
+                        continue
+                    fmt_candidate = (fmt_hint or inventory_format or "CSV").upper()
+                    comp_candidate = comp_hint or inventory_compression
+                    inferred = _infer_inventory_file_format(key)
+                    if inferred:
+                        inferred_fmt, inferred_comp = inferred
+                        fmt_candidate = inferred_fmt
+                        if inferred_fmt == "CSV":
+                            comp_candidate = inferred_comp or "NONE"
+                        else:
+                            comp_candidate = inferred_comp
+                    if fmt_candidate not in {"CSV", "PARQUET", "ORC"}:
+                        fmt_candidate = inventory_format
+                    if fmt_candidate in {"PARQUET", "ORC"}:
+                        comp_candidate = None
+                    elif comp_candidate and comp_candidate not in {
+                        "NONE",
+                        "GZIP",
+                        "BZIP2",
+                        "LZ4",
+                        "ZSTD",
+                    }:
+                        logger.debug(
+                            "Skipping inventory fragment %s due to unsupported compression %s",
+                            key,
+                            comp_candidate,
+                        )
+                        continue
+                    normalized[key] = (fmt_candidate or inventory_format, comp_candidate)
+                    seen_keys.add(key)
+
+                total_bytes = total_objects = 0
+                worker_count = min(len(normalized) or 1, 10)
+                with ThreadPoolExecutor(max_workers=max(worker_count, 1)) as pool:
+                    futures = []
+                    for key, (fmt, comp) in normalized.items():
+                        fut = pool.submit(
+                            _s3_select_sum_and_count,
+                            s3_dest,
+                            dest_bucket_param,
+                            key,
+                            account=bucket,
+                            compression=comp or inventory_compression,
+                            file_format=fmt,
+                            expected_owner=dest_account_id,
+                        )
+                        futures.append(fut)
+                    for fut in as_completed(futures):
+                        try:
+                            byte_chunk, obj_chunk = fut.result()
+                        except Exception as exc:
+                            logger.debug(
+                                "S3 Select failed for inventory fragment in %s: %s",
+                                bucket,
+                                exc,
+                            )
+                            continue
+                        total_bytes += byte_chunk
+                        total_objects += obj_chunk
+
+                metrics = (total_bytes, total_objects)
+                break
+
+            if metrics is not None:
+                break
+
+        return metrics if metrics is not None else (None, None)
+    except Exception as exc:
+        logger.debug("S3 Inventory metrics for %s failed: %s", bucket, exc)
+    return None, None
 
 def get_s3_details(
     s3_client: BaseClient,
     all_buckets: List[Dict[str, Any]],
     alias: str,
+    account_id: str,
     region: str,
     session: boto3.Session,
 ) -> List[Dict[str, Any]]:
@@ -921,7 +2627,9 @@ def get_s3_details(
     start = now - timedelta(hours=_METRIC_OFFSET + 2)
 
     buckets = [
-        b for b in all_buckets if bucket_region(b["Name"], region, session) == region
+        b
+        for b in all_buckets
+        if bucket_region(b["Name"], region, session, expected_owner=account_id) == region
     ]
     if not buckets:
         return []
@@ -1000,19 +2708,24 @@ def get_s3_details(
             size = 0
             method = "CloudWatch-CountOnly"
         else:
-            size, count = storage_lens_metrics(name, region, session)
+            size, count = storage_lens_metrics(name, region, account_id, session)
             if size is not None or count is not None:
                 method = "StorageLens"
             else:
-                size, count = inventory_metrics(name, region, session)
+                size, count = inventory_metrics(name, region, account_id, session)
                 if size is not None or count is not None:
                     method = "Inventory"
 
         if method is None:
             size = count = 0
+            paginator = require_paginator(s3_client, "list_objects_v2")
             for i, page in enumerate(
-                s3_client.get_paginator("list_objects_v2").paginate(
-                    Bucket=name, PaginationConfig={"PageSize": 250}
+                _safe_paginator(
+                    paginator.paginate,
+                    account=alias,
+                    Bucket=name,
+                    ExpectedBucketOwner=account_id,
+                    PaginationConfig={"PageSize": 250},
                 ),
                 start=1,
             ):
@@ -1029,11 +2742,19 @@ def get_s3_details(
                 method = "ListObjects"
 
         ver = _safe_aws_call(
-            s3_client.get_bucket_versioning, default={}, account=alias, Bucket=name
+            s3_client.get_bucket_versioning,
+            default={"Status": "Disabled"},
+            account=alias,
+            Bucket=name,
+            ExpectedBucketOwner=account_id,
         ).get("Status", "Disabled")
 
         enc_cfg = _safe_aws_call(
-            s3_client.get_bucket_encryption, default={}, account=alias, Bucket=name
+            s3_client.get_bucket_encryption,
+            default={},
+            account=alias,
+            Bucket=name,
+            ExpectedBucketOwner=account_id,
         )
         enc = (
             "Enabled"
@@ -1046,7 +2767,13 @@ def get_s3_details(
         except AttributeError:  # pre-GA preview (rare)
             pab_fn = s3_client.get_bucket_public_access_block
 
-        pab_cfg = _safe_aws_call(pab_fn, default={}, account=alias, Bucket=name).get(
+        pab_cfg = _safe_aws_call(
+            pab_fn,
+            default={"PublicAccessBlockConfiguration": {}},
+            account=alias,
+            Bucket=name,
+            ExpectedBucketOwner=account_id,
+        ).get(
             "PublicAccessBlockConfiguration", {}
         )
         public = "Blocked" if pab_cfg and all(pab_cfg.values()) else "Not fully blocked"
@@ -1056,6 +2783,7 @@ def get_s3_details(
             default={"PolicyStatus": {"IsPublic": False}},
             account=alias,
             Bucket=name,
+            ExpectedBucketOwner=account_id,
         )["PolicyStatus"].get("IsPublic", False)
         policy = "Public" if policy_flag else "Not Public"
 
@@ -1064,6 +2792,7 @@ def get_s3_details(
             default={"Rules": []},
             account=alias,
             Bucket=name,
+            ExpectedBucketOwner=account_id,
         ).get("Rules", [])
 
         tagset = _safe_aws_call(
@@ -1071,8 +2800,55 @@ def get_s3_details(
             default={"TagSet": []},
             account=alias,
             Bucket=name,
+            ExpectedBucketOwner=account_id,
         )["TagSet"]
         tags = {t["Key"]: t["Value"] for t in tagset}
+
+        ownership_resp = _safe_aws_call(
+            s3_client.get_bucket_ownership_controls,
+            default={},
+            account=alias,
+            Bucket=name,
+            ExpectedBucketOwner=account_id,
+        )
+        ownership_controls = ownership_resp.get("OwnershipControls", {})
+        ownership_rules = ownership_controls.get("Rules", []) if ownership_controls else []
+        if ownership_rules:
+            ownership_modes = sorted(
+                {
+                    rule.get("ObjectOwnership")
+                    for rule in ownership_rules
+                    if rule.get("ObjectOwnership")
+                }
+            )
+            ownership_setting = ", ".join(ownership_modes) if ownership_modes else "Configured"
+        else:
+            ownership_setting = "Not configured"
+
+        object_lock_cfg = _safe_aws_call(
+            s3_client.get_object_lock_configuration,
+            default={},
+            account=alias,
+            Bucket=name,
+            ExpectedBucketOwner=account_id,
+        ).get("ObjectLockConfiguration", {})
+        if object_lock_cfg:
+            lock_state = object_lock_cfg.get("ObjectLockEnabled", "Enabled")
+            retention = object_lock_cfg.get("Rule", {}).get("DefaultRetention", {})
+            parts: List[str] = []
+            mode = retention.get("Mode")
+            if mode:
+                parts.append(str(mode))
+            if "Days" in retention:
+                parts.append(f"{retention['Days']}d")
+            if "Years" in retention:
+                parts.append(f"{retention['Years']}y")
+            if parts:
+                object_lock_status = f"{lock_state} ({' '.join(parts)})"
+            else:
+                object_lock_status = lock_state
+        else:
+            object_lock_status = "Not configured"
 
         rows.append(
             {
@@ -1089,6 +2865,8 @@ def get_s3_details(
                 "Encryption": enc,
                 "PublicAccess": public,
                 "PolicyStatus": policy,
+                "OwnershipControls": ownership_setting,
+                "ObjectLock": object_lock_status,
                 "LifecycleRules": lifecycle,
                 "Tags": tags,
                 "AccountAlias": alias,
@@ -1264,33 +3042,32 @@ def get_ec2_reserved_instances(
     """
     out: list[dict[str, Any]] = []
 
-    # `describe_reserved_instances` isn’t paginated, so a single call is fine
-    resp = _safe_aws_call(
-        ec2_client.describe_reserved_instances,
-        default={"ReservedInstances": []},
+    for page in _safe_paginator(
+        require_paginator(ec2_client, "describe_reserved_instances").paginate,
         account=alias,
         Filters=[{"Name": "state", "Values": ["active"]}],
-    )
-
-    for ri in resp.get("ReservedInstances", []):
-        out.append(
-            {
-                "ReservedInstancesId": ri["ReservedInstancesId"],
-                "InstanceType": ri["InstanceType"],
-                "Scope": ri.get("Scope", ""),  # Region | AvailabilityZone
-                "InstanceCount": ri.get("InstanceCount", 0),
-                "OfferingType": ri.get("OfferingType", ""),
-                "ProductDescription": ri.get("ProductDescription", ""),
-                "Duration": seconds_to_years(ri["Duration"]),
-                "FixedPrice": ri["FixedPrice"],
-                "UsagePrice": ri["UsagePrice"],
-                "CurrencyCode": ri["CurrencyCode"],
-                "StartTime": to_local(ri.get("Start"), ec2_client.meta.region_name),
-                "State": ri["State"],
-                "Region": ec2_client.meta.region_name,
-                "AccountAlias": alias,
-            }
-        )
+    ):
+        for ri in page.get("ReservedInstances", []):
+            out.append(
+                {
+                    "ReservedInstancesId": ri["ReservedInstancesId"],
+                    "InstanceType": ri["InstanceType"],
+                    "Scope": ri.get("Scope", ""),  # Region | AvailabilityZone
+                    "InstanceCount": ri.get("InstanceCount", 0),
+                    "OfferingType": ri.get("OfferingType", ""),
+                    "ProductDescription": ri.get("ProductDescription", ""),
+                    "Duration": seconds_to_years(ri["Duration"]),
+                    "FixedPrice": ri["FixedPrice"],
+                    "UsagePrice": ri["UsagePrice"],
+                    "CurrencyCode": ri["CurrencyCode"],
+                    "StartTime": to_local(
+                        ri.get("Start"), ec2_client.meta.region_name
+                    ),
+                    "State": ri["State"],
+                    "Region": ec2_client.meta.region_name,
+                    "AccountAlias": alias,
+                }
+            )
 
     return out
 
@@ -1303,36 +3080,45 @@ def get_ec2_reserved_instances(
 def get_savings_plan_details(
     sp_client: BaseClient, alias: str, _session: boto3.Session
 ) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
+    plans_by_id: Dict[str, Dict[str, Any]] = {}
     next_token: Optional[str] = None
     while True:
         params: Dict[str, Any] = {"nextToken": next_token} if next_token else {}
+        params["states"] = SAVINGS_PLAN_STATES
         resp = _safe_aws_call(
             sp_client.describe_savings_plans, default={}, account=alias, **params
         )
         if not resp:
             break
         for plan in resp.get("savingsPlans", []):
-            start = plan.get("startTime") or plan.get("start")
-            end = plan.get("endTime") or plan.get("end")
-            out.append(
-                {
-                    "SavingsPlanId": plan.get("savingsPlanId", ""),
-                    "SavingsPlanArn": plan.get("savingsPlanArn", ""),
-                    "State": plan.get("state", ""),
-                    "Start": to_local(start, sp_client.meta.region_name),
-                    "End": to_local(end, sp_client.meta.region_name),
-                    "Term": seconds_to_years(_plan_term_seconds(plan)),
-                    "PaymentOption": plan.get("paymentOption", ""),
-                    "PlanType": plan.get("savingsPlanType", ""),
-                    "Region": "global",
-                    "AccountAlias": alias,
-                }
-            )
+            sp_id = plan.get("savingsPlanId")
+            if not sp_id:
+                continue
+            plans_by_id[str(sp_id)] = plan
         next_token = resp.get("nextToken")
         if not next_token:
             break
-    return out
+
+    rows: List[Dict[str, Any]] = []
+    for plan in plans_by_id.values():
+        start = plan.get("startTime") or plan.get("start")
+        end = plan.get("endTime") or plan.get("end")
+        rows.append(
+            {
+                "SavingsPlanId": plan.get("savingsPlanId", ""),
+                "SavingsPlanArn": plan.get("savingsPlanArn", ""),
+                "State": plan.get("state", ""),
+                "Start": to_local(start, sp_client.meta.region_name),
+                "End": to_local(end, sp_client.meta.region_name),
+                "Term": seconds_to_years(_plan_term_seconds(plan)),
+                "PaymentOption": plan.get("paymentOption", ""),
+                "PlanType": plan.get("savingsPlanType", ""),
+                "Region": "global",
+                "AccountAlias": alias,
+            }
+        )
+
+    return rows
 
 
 # --------------------------------------------------------------------------
@@ -1735,14 +3521,13 @@ def get_acm_details(acm_client: BaseClient, alias: str) -> List[Dict[str, Any]]:
 # --------------------------------------------------------------------------
 def get_eventbridge_details(events: BaseClient, alias: str) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
-    buses = [
-        b
-        for page in _safe_paginator(
-            require_paginator(events, "list_event_buses").paginate,
-            account=alias,
-        )
-        for b in page.get("EventBuses", [])
-    ]
+    buses: List[Dict[str, Any]] = []
+    for page in _iterate_operation_pages(
+        events,
+        "list_event_buses",
+        alias,
+    ):
+        buses.extend(page.get("EventBuses", []))
     for bus in buses:
         name = bus.get("Name", "")
         for page in _safe_paginator(
@@ -1751,32 +3536,77 @@ def get_eventbridge_details(events: BaseClient, alias: str) -> List[Dict[str, An
             EventBusName=name,
         ):
             for rule in page.get("Rules", []):
+                rule_name = (rule.get("Name") or "").strip()
+                if not rule_name:
+                    continue
+
                 expr = rule.get("ScheduleExpression", "")
                 if not expr:
                     continue
-                freq, det = humanise_schedule(expr)
-                targ = [
-                    t
-                    for page in _safe_paginator(
-                        require_paginator(events, "list_targets_by_rule").paginate,
+
+                description = rule.get("Description", "")
+                tz_hint = rule.get("ScheduleExpressionTimezone")
+                rule_details: Dict[str, Any] = {}
+                if not tz_hint or not description:
+                    rule_details = _safe_aws_call(
+                        events.describe_rule,
+                        default={},
                         account=alias,
-                        Rule=rule["Name"],
+                        Name=rule_name,
                         EventBusName=name,
                     )
-                    for t in page.get("Targets", [])
-                ]
-                first = targ[0] if targ else {}
+                    if rule_details:
+                        tz_hint = tz_hint or rule_details.get(
+                            "ScheduleExpressionTimezone"
+                        )
+                        description = description or rule_details.get("Description", "")
+
+                timezone_name = tz_hint or _tz_for(events.meta.region_name)
+                freq, det = humanise_schedule(expr, timezone_name)
+                targ: List[Dict[str, Any]] = []
+                for page in _iterate_operation_pages(
+                    events,
+                    "list_targets_by_rule",
+                    alias,
+                    Rule=rule_name,
+                    EventBusName=name,
+                ):
+                    targ.extend(page.get("Targets", []))
+                target_arns: List[str] = []
+                target_inputs: List[str] = []
+                for target in targ:
+                    arn = target.get("Arn") or target.get("Id")
+                    if arn:
+                        target_arns.append(str(arn))
+
+                    if target.get("Input"):
+                        target_inputs.append(str(target.get("Input")))
+                    elif target.get("InputPath"):
+                        target_inputs.append(f"InputPath={target['InputPath']}")
+                    elif target.get("InputTemplate"):
+                        target_inputs.append(str(target.get("InputTemplate")))
+                    else:
+                        transformer = target.get("InputTransformer")
+                        if transformer:
+                            target_inputs.append(
+                                json.dumps(transformer, separators=(",", ":"))
+                            )
                 out.append(
                     {
-                        "ScheduleName": rule["Name"],
+                        "ScheduleName": rule_name,
+                        "Arn": rule.get("Arn", ""),
                         "GroupName": name,
                         "State": rule.get("State", ""),
                         "Expression": expr,
-                        "Timezone": _tz_for(events.meta.region_name),
+                        "Timezone": timezone_name,
                         "Frequency": freq,
                         "Details": det,
-                        "TargetArn": first.get("Arn", ""),
-                        "Input": first.get("Input", ""),
+                        "Description": description,
+                        "ManagedBy": rule.get("ManagedBy", ""),
+                        "RoleArn": rule.get("RoleArn", ""),
+                        "TargetCount": len(targ),
+                        "TargetArn": "\n".join(target_arns),
+                        "Input": "\n".join(target_inputs),
                         "Region": events.meta.region_name,
                         "AccountAlias": alias,
                     }
@@ -1788,21 +3618,29 @@ def get_eventbridge_scheduler_details(
     scheduler: BaseClient, alias: str
 ) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
-    groups = {"default"} | {
-        g["Name"]
-        for page in _safe_paginator(
-            scheduler.get_paginator("list_schedule_groups").paginate, account=alias
-        )
-        for g in page.get("ScheduleGroups", [])
-    }
+    groups: Set[str] = {"default"}
+    for page in _iterate_operation_pages(
+        scheduler,
+        "list_schedule_groups",
+        alias,
+    ):
+        for group in page.get("ScheduleGroups", []):
+            name = group.get("Name")
+            if name:
+                groups.add(str(name))
+
     for grp in groups:
-        for page in _safe_paginator(
-            scheduler.get_paginator("list_schedules").paginate,
-            account=alias,
+        for page in _iterate_operation_pages(
+            scheduler,
+            "list_schedules",
+            alias,
             GroupName=grp,
         ):
             for s in page.get("Schedules", []):
-                name = s.get("Name", "")
+                name = (s.get("Name") or "").strip()
+                if not name:
+                    continue
+
                 det = _safe_aws_call(
                     scheduler.get_schedule,
                     default={},
@@ -1810,24 +3648,64 @@ def get_eventbridge_scheduler_details(
                     Name=name,
                     GroupName=grp,
                 )
+                if not det:
+                    continue
+
                 expr = det.get("ScheduleExpression", "")
-                freq, desc = humanise_schedule(expr)
                 tz = det.get(
                     "ScheduleExpressionTimezone",
                     REGION_TZ.get(scheduler.meta.region_name, "UTC"),
                 )
-                tgt = det.get("Target", {})
+                freq, desc = humanise_schedule(expr, tz)
+                tgt = det.get("Target") or {}
+                flex = det.get("FlexibleTimeWindow") or {}
+                flex_mode = flex.get("Mode") or flex.get("mode")
+                flex_max = (
+                    flex.get("MaximumWindowInMinutes")
+                    or flex.get("maximumWindowInMinutes")
+                )
+
+                next_invocation = (
+                    det.get("NextInvocationTime")
+                    or det.get("NextInvocationDateTime")
+                )
+                if not next_invocation:
+                    next_runs = det.get("NextRunTimes") or []
+                    if next_runs:
+                        next_invocation = next_runs[0]
+
+                target_input = ""
+                if tgt.get("Input"):
+                    target_input = str(tgt.get("Input"))
+                elif tgt.get("InputPath"):
+                    target_input = f"InputPath={tgt['InputPath']}"
+                elif tgt.get("InputTemplate"):
+                    target_input = str(tgt.get("InputTemplate"))
+                else:
+                    transformer = tgt.get("InputTransformer")
+                    if transformer:
+                        target_input = json.dumps(transformer, separators=(",", ":"))
+
                 out.append(
                     {
                         "ScheduleName": name,
+                        "ScheduleArn": det.get("Arn", ""),
                         "GroupName": grp,
                         "State": det.get("State", ""),
                         "Expression": expr,
                         "Timezone": tz,
                         "Frequency": freq,
                         "Details": desc,
+                        "Description": det.get("Description", ""),
+                        "FlexibleWindowType": flex_mode or "OFF",
+                        "FlexibleWindowMaximumDelay": flex_max,
+                        "NextInvocationTime": to_local(
+                            next_invocation, scheduler.meta.region_name
+                        ),
+                        "TargetCount": 1 if tgt else 0,
                         "TargetArn": tgt.get("Arn", ""),
-                        "Input": tgt.get("Input", ""),
+                        "TargetRoleArn": tgt.get("RoleArn", ""),
+                        "Input": target_input,
                         "Region": scheduler.meta.region_name,
                         "AccountAlias": alias,
                     }
@@ -1881,7 +3759,13 @@ def get_backup_details(backup_client: BaseClient, alias: str) -> List[Dict[str, 
 
         for rule in plan.get("Rules", []):
             expr = rule.get("ScheduleExpression", "")
-            freq, det = humanise_schedule(expr)
+            freq, det = humanise_schedule(
+                expr,
+                rule.get(
+                    "ScheduleExpressionTimezone",
+                    REGION_TZ.get(backup_client.meta.region_name, "UTC"),
+                ),
+            )
             tz = rule.get(
                 "ScheduleExpressionTimezone",
                 REGION_TZ.get(backup_client.meta.region_name, "UTC"),
@@ -2161,9 +4045,7 @@ def get_lightsail_inventory(
     bundle_specs = {}
     try:
         # Fetch Instance Bundles
-        for page in _safe_paginator(
-            ls_client.get_paginator("get_bundles").paginate, account=alias
-        ):
+        for page in lightsail_paginate(ls_client, "get_bundles", alias):
             for bundle in page.get("bundles", []):
                 bundle_specs[bundle["bundleId"]] = {
                     "vCPUs": bundle.get("cpuCount"),
@@ -2172,9 +4054,8 @@ def get_lightsail_inventory(
                     "DataTransferGB": bundle.get("transferPerMonthInGb"),
                 }
         # Fetch Database Bundles
-        for page in _safe_paginator(
-            ls_client.get_paginator("get_relational_database_bundles").paginate,
-            account=alias,
+        for page in lightsail_paginate(
+            ls_client, "get_relational_database_bundles", alias
         ):
             for bundle in page.get("bundles", []):
                 bundle_specs[bundle["bundleId"]] = {
@@ -2191,18 +4072,19 @@ def get_lightsail_inventory(
 
     # --- Regional Resources ---
     # Instances
-    for page in _safe_paginator(
-        ls_client.get_paginator("get_instances").paginate, account=alias
-    ):
+    for page in lightsail_paginate(ls_client, "get_instances", alias):
         for inst in page.get("instances", []):
             bundle_id = inst.get("bundleId")
             specs = bundle_specs.get(bundle_id, {})
             firewall_rules = []
             try:
-                port_states = ls_client.get_instance_port_states(
-                    instanceName=inst["name"]
-                ).get("portStates", [])
-                firewall_rules = port_states
+                port_states = _safe_aws_call(
+                    ls_client.get_instance_port_states,
+                    default={"portStates": []},
+                    account=alias,
+                    instanceName=inst.get("name", ""),
+                )
+                firewall_rules = port_states.get("portStates", [])
             except Exception as e:
                 log(
                     "warning",
@@ -2235,9 +4117,7 @@ def get_lightsail_inventory(
             )
 
     # Databases
-    for page in _safe_paginator(
-        ls_client.get_paginator("get_relational_databases").paginate, account=alias
-    ):
+    for page in lightsail_paginate(ls_client, "get_relational_databases", alias):
         for db in page.get("relationalDatabases", []):
             bundle_id = db.get("relationalDatabaseBundleId")
             specs = bundle_specs.get(bundle_id, {})
@@ -2256,13 +4136,12 @@ def get_lightsail_inventory(
                     "DiskSizeGB": specs.get("DiskSizeGB"),
                     "CreatedAt": to_local(db.get("createdAt"), current_region),
                     "AccountAlias": alias,
+                    "FirewallRules": [],
                 }
             )
 
     # Disks (Block Storage)
-    for page in _safe_paginator(
-        ls_client.get_paginator("get_disks").paginate, account=alias
-    ):
+    for page in lightsail_paginate(ls_client, "get_disks", alias):
         for disk in page.get("disks", []):
             out.append(
                 {
@@ -2276,13 +4155,12 @@ def get_lightsail_inventory(
                     "AttachedTo": disk.get("attachedTo"),
                     "CreatedAt": to_local(disk.get("createdAt"), current_region),
                     "AccountAlias": alias,
+                    "FirewallRules": [],
                 }
             )
 
     # Static IPs
-    for page in _safe_paginator(
-        ls_client.get_paginator("get_static_ips").paginate, account=alias
-    ):
+    for page in lightsail_paginate(ls_client, "get_static_ips", alias):
         for ip in page.get("staticIps", []):
             out.append(
                 {
@@ -2296,34 +4174,34 @@ def get_lightsail_inventory(
                     "AttachedTo": ip.get("attachedTo"),
                     "CreatedAt": to_local(ip.get("createdAt"), current_region),
                     "AccountAlias": alias,
+                    "FirewallRules": [],
                 }
             )
 
     # Certificates
-    cert_resp = _safe_aws_call(ls_client.get_certificates, account=alias, default={})
-    for cert in cert_resp.get("certificates", []):
-        out.append(
-            {
-                "Name": cert.get("name"),
-                "ResourceType": "Certificate",
-                "Arn": cert.get("arn"),
-                "State": cert.get("status"),
-                "Region": current_region,
-                "PublicIpOrDnsName": cert.get("domainName"),
-                "CreatedAt": to_local(cert.get("createdAt"), current_region),
-                "ExpiresAt": to_local(cert.get("notAfter"), current_region),
-                "AccountAlias": alias,
-            }
-        )
+    for page in lightsail_paginate(ls_client, "get_certificates", alias):
+        for cert in page.get("certificates", []):
+            out.append(
+                {
+                    "Name": cert.get("name"),
+                    "ResourceType": "Certificate",
+                    "Arn": cert.get("arn"),
+                    "State": cert.get("status"),
+                    "Region": current_region,
+                    "PublicIpOrDnsName": cert.get("domainName"),
+                    "CreatedAt": to_local(cert.get("createdAt"), current_region),
+                    "ExpiresAt": to_local(cert.get("notAfter"), current_region),
+                    "AccountAlias": alias,
+                    "FirewallRules": [],
+                }
+            )
 
     # --- Global Resources (fetched only once from the primary region) ---
     if is_primary_region:
         # log("info", "Fetching global Lightsail Domains from us-east-1", account=alias)
         try:
             global_ls_client = aws_client("lightsail", "us-east-1", session)
-            for page in _safe_paginator(
-                global_ls_client.get_paginator("get_domains").paginate, account=alias
-            ):
+            for page in lightsail_paginate(global_ls_client, "get_domains", alias):
                 for domain in page.get("domains", []):
                     out.append(
                         {
@@ -2333,6 +4211,7 @@ def get_lightsail_inventory(
                             "Region": "global",
                             "CreatedAt": to_local(domain.get("createdAt"), "us-east-1"),
                             "AccountAlias": alias,
+                            "FirewallRules": [],
                         }
                     )
         except Exception as e:
@@ -2460,6 +4339,34 @@ def get_iam_details(
     ):
         for user in page.get("Users", []):
             user_name = user["UserName"]
+            user_groups = sorted(
+                {
+                    grp.get("GroupName")
+                    for page in _safe_paginator(
+                        require_paginator(iam_client, "list_groups_for_user").paginate,
+                        account=alias,
+                        UserName=user_name,
+                    )
+                    for grp in page.get("Groups", [])
+                    if grp.get("GroupName")
+                }
+            )
+
+            attached_user_policies = sorted(
+                {
+                    pol.get("PolicyArn")
+                    for page in _safe_paginator(
+                        require_paginator(
+                            iam_client, "list_attached_user_policies"
+                        ).paginate,
+                        account=alias,
+                        UserName=user_name,
+                    )
+                    for pol in page.get("AttachedPolicies", [])
+                    if pol.get("PolicyArn")
+                }
+            )
+
             user_summary = {
                 "UserName": user_name,
                 "UserId": user["UserId"],
@@ -2470,18 +4377,8 @@ def get_iam_details(
                 "PasswordLastUsed": to_local(
                     user.get("PasswordLastUsed"), iam_client.meta.region_name
                 ),
-                "Groups": [
-                    g["GroupName"]
-                    for g in iam_client.list_groups_for_user(UserName=user_name).get(
-                        "Groups", []
-                    )
-                ],
-                "AttachedPolicies": [
-                    p["PolicyArn"]
-                    for p in iam_client.list_attached_user_policies(
-                        UserName=user_name
-                    ).get("AttachedPolicies", [])
-                ],
+                "Groups": user_groups,
+                "AttachedPolicies": attached_user_policies,
                 "InlinePolicies": sorted(
                     set(
                         p
@@ -2534,6 +4431,21 @@ def get_iam_details(
 
             all_principals = service_principals | account_principals | federated_principals
 
+            attached_role_policies = sorted(
+                {
+                    pol.get("PolicyArn")
+                    for page in _safe_paginator(
+                        require_paginator(
+                            iam_client, "list_attached_role_policies"
+                        ).paginate,
+                        account=alias,
+                        RoleName=role_name,
+                    )
+                    for pol in page.get("AttachedPolicies", [])
+                    if pol.get("PolicyArn")
+                }
+            )
+
             role_summary = {
                 "RoleName": role_name,
                 "RoleId": role["RoleId"],
@@ -2544,12 +4456,7 @@ def get_iam_details(
                 "ServicePrincipals": sorted(all_principals),
                 "AccountPrincipals": sorted(account_principals),
                 "FederatedPrincipals": sorted(federated_principals),
-                "AttachedPolicies": [
-                    p["PolicyArn"]
-                    for p in iam_client.list_attached_role_policies(
-                        RoleName=role_name
-                    ).get("AttachedPolicies", [])
-                ],
+                "AttachedPolicies": attached_role_policies,
                 "InlinePolicies": sorted(
                     set(
                         p
@@ -2579,25 +4486,35 @@ def get_iam_details(
                     group.get("CreateDate"), iam_client.meta.region_name
                 ),
                 "AttachedPolicies": [
-                    p["PolicyArn"]
-                    for p in iam_client.list_attached_group_policies(
-                        GroupName=group_name
-                    ).get("AttachedPolicies", [])
+                    policy["PolicyArn"]
+                    for page in _safe_paginator(
+                        iam_client.get_paginator("list_attached_group_policies").paginate,
+                        account=alias,
+                        GroupName=group_name,
+                    )
+                    for policy in page.get("AttachedPolicies", [])
                 ],
                 "InlinePolicies": sorted(
-                    set(
-                        p
+                    {
+                        policy_name
                         for page in _safe_paginator(
                             require_paginator(iam_client, "list_group_policies").paginate,
                             account=alias,
                             GroupName=group_name,
                         )
-                        for p in page.get("PolicyNames", [])
-                    )
+                        for policy_name in page.get("PolicyNames", [])
+                    }
                 ),
                 "Members": [
-                    u["UserName"]
-                    for u in iam_client.get_group(GroupName=group_name).get("Users", [])
+                    user_name
+                    for page in _safe_paginator(
+                        require_paginator(iam_client, "get_group").paginate,
+                        account=alias,
+                        GroupName=group_name,
+                    )
+                    for user_name in (
+                        u.get("UserName") for u in page.get("Users", []) if u.get("UserName")
+                    )
                 ],
                 "AccountAlias": alias,
             }
@@ -2607,7 +4524,11 @@ def get_iam_details(
     paginator = iam_client.get_paginator("list_policies")
     for scope in ["Local", "AWS"]:
         policy_type = "Customer Managed" if scope == "Local" else "AWS Managed"
-        for page in paginator.paginate(Scope=scope):
+        for page in _safe_paginator(
+            paginator.paginate,
+            account=alias,
+            Scope=scope,
+        ):
             for policy in page.get("Policies", []):
                 if scope == "AWS" and policy.get("AttachmentCount", 0) == 0:
                     continue
@@ -2651,43 +4572,54 @@ def get_iam_details(
                     "AccountAlias": alias,
                 }
 
-                try:
-                    ver = iam_client.get_policy_version(
-                        PolicyArn=policy["Arn"], VersionId=policy["DefaultVersionId"]
+                version_id = policy.get("DefaultVersionId")
+                if version_id:
+                    version_resp = _safe_aws_call(
+                        iam_client.get_policy_version,
+                        default={"PolicyVersion": {}},
+                        account=alias,
+                        PolicyArn=policy["Arn"],
+                        VersionId=version_id,
+                    )
+                    policy_doc = version_resp.get("PolicyVersion", {}).get(
+                        "Document", {}
                     )
                     if scope == "AWS":
-                        actions = []
-                        for stmt in ver["PolicyVersion"]["Document"].get(
-                            "Statement", []
-                        ):
-                            if "Action" in stmt:
-                                actions.extend(
-                                    stmt["Action"]
-                                    if isinstance(stmt["Action"], list)
-                                    else [stmt["Action"]]
-                                )
-                        policy_summary["ActionPatterns"] = list(set(actions))
+                        actions: List[str] = []
+                        for stmt in policy_doc.get("Statement", []):
+                            action_field = stmt.get("Action")
+                            if not action_field:
+                                continue
+                            if isinstance(action_field, list):
+                                actions.extend(action_field)
+                            else:
+                                actions.append(action_field)
+                        if actions:
+                            policy_summary["ActionPatterns"] = sorted(set(actions))
                     else:
-                        policy_summary["PolicyDocument"] = ver["PolicyVersion"][
-                            "Document"
-                        ]
-                except Exception:
-                    pass
+                        policy_summary["PolicyDocument"] = policy_doc
 
-                attached_entities = iam_client.list_entities_for_policy(
-                    PolicyArn=policy["Arn"]
-                )
-                for entity_type_plural in (
-                    "PolicyGroups",
-                    "PolicyUsers",
-                    "PolicyRoles",
+                for page in _safe_paginator(
+                    require_paginator(
+                        iam_client, "list_entities_for_policy"
+                    ).paginate,
+                    account=alias,
+                    PolicyArn=policy["Arn"],
                 ):
-                    entity_type_singular = entity_type_plural.replace("Policy", "")[:-1]
-                    name_key = f"{entity_type_singular}Name"
-                    for entity in attached_entities.get(entity_type_plural, []):
-                        policy_summary["AttachmentEntities"].append(
-                            {"Type": entity_type_singular, "Name": entity[name_key]}
-                        )
+                    for entity_type_plural in (
+                        "PolicyGroups",
+                        "PolicyUsers",
+                        "PolicyRoles",
+                    ):
+                        entity_type_singular = entity_type_plural.replace("Policy", "")[:-1]
+                        name_key = f"{entity_type_singular}Name"
+                        for entity in page.get(entity_type_plural, []):
+                            name = entity.get(name_key)
+                            if not name:
+                                continue
+                            policy_summary["AttachmentEntities"].append(
+                                {"Type": entity_type_singular, "Name": name}
+                            )
 
                 iam_resources["IAMPolicies"].append(policy_summary)
 
@@ -2806,22 +4738,23 @@ def get_governance_details(
     # --- Security Hub ---
     try:
         sh_client = aws_client("securityhub", region, sess)
-        sh_client.describe_hub()
-        out.append(
-            {
-                "Service": "Security Hub",
-                "Status": "Enabled",
-                "Details": "Security Hub is enabled for this region.",
-            }
+        hub_resp = _safe_aws_call(
+            sh_client.describe_hub,
+            default={},
+            account=alias,
         )
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "InvalidAccessException":
+        if hub_resp:
+            details = hub_resp.get("HubArn")
             out.append(
-                {"Service": "Security Hub", "Status": "Not Enabled", "Details": ""}
+                {
+                    "Service": "Security Hub",
+                    "Status": "Enabled",
+                    "Details": f"HubArn: {details}" if details else "Enabled",
+                }
             )
         else:
             out.append(
-                {"Service": "Security Hub", "Status": "Error", "Details": str(e)}
+                {"Service": "Security Hub", "Status": "Not Enabled", "Details": ""}
             )
     except Exception as e:
         out.append(
@@ -2835,11 +4768,22 @@ def get_governance_details(
     # --- GuardDuty ---
     try:
         gd_client = aws_client("guardduty", region, sess)
-        detectors = gd_client.list_detectors().get("DetectorIds", [])
-        if detectors:
-            status = gd_client.get_detector(DetectorId=detectors[0]).get(
-                "Status", "UNKNOWN"
+        detectors = [
+            detector
+            for page in _safe_paginator(
+                require_paginator(gd_client, "list_detectors").paginate,
+                account=alias,
             )
+            for detector in page.get("DetectorIds", [])
+        ]
+        if detectors:
+            detector_resp = _safe_aws_call(
+                gd_client.get_detector,
+                default={},
+                account=alias,
+                DetectorId=detectors[0],
+            )
+            status = detector_resp.get("Status", "Enabled")
             out.append(
                 {
                     "Service": "GuardDuty",
@@ -2861,9 +4805,11 @@ def get_governance_details(
     # --- AWS Config ---
     try:
         config_client = aws_client("config", region, sess)
-        recorders = config_client.describe_configuration_recorder_status().get(
-            "ConfigurationRecordersStatus", []
-        )
+        recorders = _safe_aws_call(
+            config_client.describe_configuration_recorder_status,
+            default={"ConfigurationRecordersStatus": []},
+            account=alias,
+        ).get("ConfigurationRecordersStatus", [])
         if not recorders:
             out.append(
                 {
@@ -2889,7 +4835,12 @@ def get_governance_details(
     # --- Amazon Inspector ---
     try:
         inspector_client = aws_client("inspector2", region, sess)
-        status = inspector_client.get_status().get("status", "UNKNOWN")
+        status_resp = _safe_aws_call(
+            inspector_client.get_status,
+            default={},
+            account=alias,
+        )
+        status = status_resp.get("status", "UNKNOWN")
         out.append(
             {
                 "Service": "Inspector",
@@ -2905,7 +4856,11 @@ def get_governance_details(
         # --- CloudTrail ---
         try:
             ct_client = aws_client("cloudtrail", region, sess)
-            trails = ct_client.describe_trails().get("trailList", [])
+            trails = _safe_aws_call(
+                ct_client.describe_trails,
+                default={"trailList": []},
+                account=alias,
+            ).get("trailList", [])
             if not trails:
                 out.append(
                     {
@@ -2941,10 +4896,23 @@ def get_governance_details(
         # --- S3 Block Public Access ---
         try:
             s3_control_client = aws_client("s3control", region, sess)
-            acct_id = sess.client("sts").get_caller_identity()["Account"]
-            config = s3_control_client.get_public_access_block(AccountId=acct_id).get(
-                "PublicAccessBlockConfiguration", {}
+            sts_client = sess.client("sts", config=RETRY_CONFIG)
+            identity = _safe_aws_call(
+                sts_client.get_caller_identity,
+                default={},
+                account=alias,
             )
+            acct_id = identity.get("Account")
+            if not acct_id:
+                raise RuntimeError(
+                    "Unable to determine account ID for S3 Block Public Access check"
+                )
+            config = _safe_aws_call(
+                s3_control_client.get_public_access_block,
+                default={"PublicAccessBlockConfiguration": {}},
+                account=alias,
+                AccountId=acct_id,
+            ).get("PublicAccessBlockConfiguration", {})
             if all(config.values()):
                 out.append(
                     {
@@ -3017,14 +4985,16 @@ def get_cost_opportunities(
     lambda_client: BaseClient,
     rds_client: BaseClient,
     alias: str,
+    account_id: str,
 ) -> List[Dict[str, Any]]:
     """Identifies potential cost savings opportunities based on AWS best practices."""
     out: List[Dict[str, Any]] = []
     region = ec2_client.meta.region_name
     # log("info", f"Scanning for cost opportunities in {region}", account=alias)
 
-    fourteen_days_ago = datetime.now(timezone.utc) - timedelta(days=14)
-    seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    now = datetime.now(timezone.utc)
+    fourteen_days_ago = now - timedelta(days=14)
+    seven_days_ago = now - timedelta(days=7)
 
     # --- 1. Unattached EBS Volumes ---
     try:
@@ -3073,42 +5043,56 @@ def get_cost_opportunities(
 
     # --- 3. Idle Load Balancers ---
     try:
-        lbs = elbv2_client.describe_load_balancers().get("LoadBalancers", [])
-        for lb in lbs:
-            lb_arn = lb["LoadBalancerArn"]
-            target_groups = elbv2_client.describe_target_groups(
-                LoadBalancerArn=lb_arn
-            ).get("TargetGroups", [])
-            if not target_groups:
-                out.append(
-                    {
-                        "ResourceType": "Load Balancer",
-                        "ResourceId": lb["DNSName"],
-                        "Reason": "Idle (No Target Groups)",
-                        "Details": f"Name: {lb['LoadBalancerName']}",
-                    }
-                )
-                continue
-            is_idle = True
-            for tg in target_groups:
-                health = elbv2_client.describe_target_health(
-                    TargetGroupArn=tg["TargetGroupArn"]
-                )
-                if any(
-                    t.get("TargetHealth", {}).get("State") == "healthy"
-                    for t in health.get("TargetHealthDescriptions", [])
-                ):
-                    is_idle = False
-                    break
-            if is_idle:
-                out.append(
-                    {
-                        "ResourceType": "Load Balancer",
-                        "ResourceId": lb["DNSName"],
-                        "Reason": "Idle (No Healthy Targets)",
-                        "Details": f"Name: {lb['LoadBalancerName']}",
-                    }
-                )
+        for lb_page in _safe_paginator(
+            require_paginator(elbv2_client, "describe_load_balancers").paginate,
+            account=alias,
+        ):
+            for lb in lb_page.get("LoadBalancers", []):
+                lb_arn = lb.get("LoadBalancerArn")
+                target_groups: List[Dict[str, Any]] = []
+                if lb_arn:
+                    for tg_page in _safe_paginator(
+                        require_paginator(elbv2_client, "describe_target_groups").paginate,
+                        account=alias,
+                        LoadBalancerArn=lb_arn,
+                    ):
+                        target_groups.extend(tg_page.get("TargetGroups", []))
+
+                if not target_groups:
+                    out.append(
+                        {
+                            "ResourceType": "Load Balancer",
+                            "ResourceId": lb.get("DNSName", ""),
+                            "Reason": "Idle (No Target Groups)",
+                            "Details": f"Name: {lb.get('LoadBalancerName', '')}",
+                        }
+                    )
+                    continue
+
+                has_healthy = False
+                for tg in target_groups:
+                    health = _safe_aws_call(
+                        elbv2_client.describe_target_health,
+                        default={"TargetHealthDescriptions": []},
+                        account=alias,
+                        TargetGroupArn=tg.get("TargetGroupArn", ""),
+                    )
+                    if any(
+                        desc.get("TargetHealth", {}).get("State") == "healthy"
+                        for desc in health.get("TargetHealthDescriptions", [])
+                    ):
+                        has_healthy = True
+                        break
+
+                if not has_healthy:
+                    out.append(
+                        {
+                            "ResourceType": "Load Balancer",
+                            "ResourceId": lb.get("DNSName", ""),
+                            "Reason": "Idle (No Healthy Targets)",
+                            "Details": f"Name: {lb.get('LoadBalancerName', '')}",
+                        }
+                    )
     except Exception as e:
         log(
             "warning",
@@ -3120,7 +5104,11 @@ def get_cost_opportunities(
     try:
         ninety_days_ago = datetime.now(timezone.utc) - timedelta(days=90)
         paginator = ec2_client.get_paginator("describe_snapshots")
-        for page in paginator.paginate(OwnerIds=["self"]):
+        for page in _safe_paginator(
+            paginator.paginate,
+            account=alias,
+            OwnerIds=["self"],
+        ):
             for snap in page.get("Snapshots", []):
                 if snap["StartTime"] < ninety_days_ago:
                     out.append(
@@ -3147,13 +5135,18 @@ def get_cost_opportunities(
 
     # --- 5. S3 Buckets without Effective Lifecycle Policies & Incomplete Multipart Uploads ---
     try:
-        buckets = s3_client.list_buckets().get("Buckets", [])
-        for bucket in buckets:
+        bucket_listing = _safe_aws_call(
+            s3_client.list_buckets,
+            default={"Buckets": []},
+            account=alias,
+        )
+        for bucket in bucket_listing.get("Buckets", []):
             bucket_name = bucket["Name"]
             has_effective_policy = False
             try:
                 lifecycle = s3_client.get_bucket_lifecycle_configuration(
-                    Bucket=bucket_name
+                    Bucket=bucket_name,
+                    ExpectedBucketOwner=account_id,
                 )
                 for rule in lifecycle.get("Rules", []):
                     if rule.get("Status") == "Enabled":
@@ -3179,8 +5172,13 @@ def get_cost_opportunities(
                 )
 
             # Check for old incomplete multipart uploads
-            mpu_paginator = s3_client.get_paginator("list_multipart_uploads")
-            for mpu_page in mpu_paginator.paginate(Bucket=bucket_name):
+            mpu_paginator = require_paginator(s3_client, "list_multipart_uploads")
+            for mpu_page in _safe_paginator(
+                mpu_paginator.paginate,
+                account=alias,
+                Bucket=bucket_name,
+                ExpectedBucketOwner=account_id,
+            ):
                 for upload in mpu_page.get("Uploads", []):
                     if upload["Initiated"] < seven_days_ago:
                         out.append(
@@ -3200,34 +5198,42 @@ def get_cost_opportunities(
 
     # --- 6. Underutilized EC2 Instances ---
     try:
-        for page in _safe_paginator(
-            ec2_client.get_paginator("describe_instances").paginate,
-            account=alias,
-            Filters=[{"Name": "instance-state-name", "Values": ["running"]}],
-        ):
-            for reservation in page.get("Reservations", []):
-                for instance in reservation.get("Instances", []):
-                    instance_id = instance["InstanceId"]
-                    metrics = cw_client.get_metric_statistics(
-                        Namespace="AWS/EC2",
-                    MetricName="CPUUtilization",
-                    Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
-                    StartTime=fourteen_days_ago,
-                    EndTime=datetime.now(timezone.utc),
-                    Period=86400,
-                    Statistics=["Maximum"],
-                )
-                if metrics["Datapoints"]:
-                    max_cpu = max(dp["Maximum"] for dp in metrics["Datapoints"])
-                    if max_cpu < 5:  # Less than 5% max utilization
-                        out.append(
-                            {
-                                "ResourceType": "EC2 Instance",
-                                "ResourceId": instance_id,
-                                "Reason": "Underutilized (CPU < 5%)",
-                                "Details": f"Type: {instance.get('InstanceType')}, Max CPU in 14 days: {max_cpu:.2f}%",
-                            }
-                        )
+        running_instances = [
+            inst
+            for page in _safe_paginator(
+                require_paginator(ec2_client, "describe_instances").paginate,
+                account=alias,
+                Filters=[{"Name": "instance-state-name", "Values": ["running"]}],
+            )
+            for reservation in page.get("Reservations", [])
+            for inst in reservation.get("Instances", [])
+        ]
+
+        if running_instances:
+            cpu_maxima = collect_metric_maxima(
+                cw_client,
+                alias=alias,
+                namespace="AWS/EC2",
+                metric_name="CPUUtilization",
+                dimension_name="InstanceId",
+                dimension_values=[inst["InstanceId"] for inst in running_instances],
+                start_time=fourteen_days_ago,
+                end_time=now,
+                period=86400,
+            )
+
+            for instance in running_instances:
+                instance_id = instance["InstanceId"]
+                max_cpu = cpu_maxima.get(instance_id, 0.0)
+                if max_cpu < 5:
+                    out.append(
+                        {
+                            "ResourceType": "EC2 Instance",
+                            "ResourceId": instance_id,
+                            "Reason": "Underutilized (CPU < 5%)",
+                            "Details": f"Type: {instance.get('InstanceType')}, Max CPU in 14 days: {max_cpu:.2f}%",
+                        }
+                    )
     except Exception as e:
         log(
             "warning",
@@ -3237,37 +5243,45 @@ def get_cost_opportunities(
 
     # --- 7. Underutilized RDS Instances ---
     try:
-        dbs = rds_client.describe_db_instances().get("DBInstances", [])
+        dbs = [
+            db
+            for page in _safe_paginator(
+                require_paginator(rds_client, "describe_db_instances").paginate,
+                account=alias,
+            )
+            for db in page.get("DBInstances", [])
+        ]
+
+        cpu_maxima: Dict[str, float] = {}
+        connection_maxima: Dict[str, float] = {}
+        if dbs:
+            cpu_maxima = collect_metric_maxima(
+                cw_client,
+                alias=alias,
+                namespace="AWS/RDS",
+                metric_name="CPUUtilization",
+                dimension_name="DBInstanceIdentifier",
+                dimension_values=[db["DBInstanceIdentifier"] for db in dbs],
+                start_time=fourteen_days_ago,
+                end_time=now,
+                period=86400,
+            )
+            connection_maxima = collect_metric_maxima(
+                cw_client,
+                alias=alias,
+                namespace="AWS/RDS",
+                metric_name="DatabaseConnections",
+                dimension_name="DBInstanceIdentifier",
+                dimension_values=[db["DBInstanceIdentifier"] for db in dbs],
+                start_time=fourteen_days_ago,
+                end_time=now,
+                period=86400,
+            )
+
         for db in dbs:
             db_id = db["DBInstanceIdentifier"]
-            cpu_metrics = cw_client.get_metric_statistics(
-                Namespace="AWS/RDS",
-                MetricName="CPUUtilization",
-                Dimensions=[{"Name": "DBInstanceIdentifier", "Value": db_id}],
-                StartTime=fourteen_days_ago,
-                EndTime=datetime.now(timezone.utc),
-                Period=86400,
-                Statistics=["Maximum"],
-            )
-            conn_metrics = cw_client.get_metric_statistics(
-                Namespace="AWS/RDS",
-                MetricName="DatabaseConnections",
-                Dimensions=[{"Name": "DBInstanceIdentifier", "Value": db_id}],
-                StartTime=fourteen_days_ago,
-                EndTime=datetime.now(timezone.utc),
-                Period=86400,
-                Statistics=["Maximum"],
-            )
-            max_cpu = (
-                max(dp["Maximum"] for dp in cpu_metrics.get("Datapoints", []))
-                if cpu_metrics.get("Datapoints")
-                else 0
-            )
-            max_conn = (
-                max(dp["Maximum"] for dp in conn_metrics.get("Datapoints", []))
-                if conn_metrics.get("Datapoints")
-                else 0
-            )
+            max_cpu = cpu_maxima.get(db_id, 0.0)
+            max_conn = connection_maxima.get(db_id, 0.0)
             if max_cpu < 5 and max_conn < 5:
                 out.append(
                     {
@@ -3286,41 +5300,54 @@ def get_cost_opportunities(
 
     # --- 8. Lambda Functions with Low Invocation or High Error Rates ---
     try:
-        functions = lambda_client.list_functions().get("Functions", [])
+        functions = [
+            fn
+            for page in _safe_paginator(
+                require_paginator(lambda_client, "list_functions").paginate,
+                account=alias,
+            )
+            for fn in page.get("Functions", [])
+        ]
+        invocation_totals: Dict[str, float] = {}
+        error_totals: Dict[str, float] = {}
+        if functions:
+            invocation_totals = collect_metric_sums(
+                cw_client,
+                alias=alias,
+                namespace="AWS/Lambda",
+                metric_name="Invocations",
+                dimension_name="FunctionName",
+                dimension_values=[fn["FunctionName"] for fn in functions],
+                start_time=fourteen_days_ago,
+                end_time=now,
+                period=86400,
+            )
+            error_totals = collect_metric_sums(
+                cw_client,
+                alias=alias,
+                namespace="AWS/Lambda",
+                metric_name="Errors",
+                dimension_name="FunctionName",
+                dimension_values=[fn["FunctionName"] for fn in functions],
+                start_time=fourteen_days_ago,
+                end_time=now,
+                period=86400,
+            )
+
         for func in functions:
             func_name = func["FunctionName"]
-            invocations_resp = cw_client.get_metric_statistics(
-                Namespace="AWS/Lambda",
-                MetricName="Invocations",
-                Dimensions=[{"Name": "FunctionName", "Value": func_name}],
-                StartTime=fourteen_days_ago,
-                EndTime=datetime.now(timezone.utc),
-                Period=1209600,
-                Statistics=["Sum"],
-            )
-            total_invocations = sum(
-                dp["Sum"] for dp in invocations_resp.get("Datapoints", [])
-            )
+            total_invocations = invocation_totals.get(func_name, 0.0)
             if total_invocations < 10:
                 out.append(
                     {
                         "ResourceType": "Lambda Function",
                         "ResourceId": func_name,
                         "Reason": "Low Invocations (< 10 in 14 days)",
-                        "Details": f"Total invocations: {total_invocations}",
+                        "Details": f"Total invocations: {int(total_invocations)}",
                     }
                 )
 
-            errors_resp = cw_client.get_metric_statistics(
-                Namespace="AWS/Lambda",
-                MetricName="Errors",
-                Dimensions=[{"Name": "FunctionName", "Value": func_name}],
-                StartTime=fourteen_days_ago,
-                EndTime=datetime.now(timezone.utc),
-                Period=1209600,
-                Statistics=["Sum"],
-            )
-            total_errors = sum(dp["Sum"] for dp in errors_resp.get("Datapoints", []))
+            total_errors = error_totals.get(func_name, 0.0)
             if total_invocations > 0 and (total_errors / total_invocations) > 0.1:
                 error_rate = (total_errors / total_invocations) * 100
                 out.append(
@@ -4105,6 +6132,23 @@ def parse_cli() -> argparse.Namespace:
         help=f"IAM role to assume in member accounts (default: {DEFAULT_ROLE}).",
     )
     parser.add_argument(
+        "--external-id",
+        default=None,
+        help=(
+            "External ID to supply when assuming roles. This is strongly "
+            "recommended for cross-account access policies."
+        ),
+    )
+    parser.add_argument(
+        "--assume-role-duration",
+        type=int,
+        default=None,
+        help=(
+            "Override the STS AssumeRole duration in seconds (allowed range "
+            "900-43200)."
+        ),
+    )
+    parser.add_argument(
         "-r",
         "--regions",
         help="Comma-separated list of regions to scan (e.g., us-east-1,us-west-2). Default: all enabled regions.",
@@ -4148,21 +6192,38 @@ def scan_account(
     Scans a single AWS account for resources across specified regions.
     """
     try:
-        aliases = (
-            sess.client("iam", region_name="us-east-1")
-            .list_account_aliases()
-            .get("AccountAliases", [])
-        )
+        iam_client = sess.client("iam", region_name="us-east-1", config=RETRY_CONFIG)
+        aliases: List[str] = []
+        marker: Optional[str] = None
+        while True:
+            params = {"Marker": marker} if marker else {}
+            resp = _safe_aws_call(
+                iam_client.list_account_aliases,
+                default={},
+                account=acct_id,
+                **params,
+            )
+            aliases.extend(resp.get("AccountAliases", []))
+            if resp.get("IsTruncated"):
+                marker = resp.get("Marker")
+            else:
+                break
         alias = aliases[0] if aliases else acct_id
     except Exception:
         alias = acct_id
 
     s3_global = aws_client("s3", "us-east-1", sess)
-    all_buckets = s3_global.list_buckets().get("Buckets", [])
+    all_buckets = _safe_aws_call(
+        s3_global.list_buckets,
+        default={"Buckets": []},
+        account=acct_id,
+    ).get("Buckets", [])
 
     buckets_by_region: dict[str, list[dict[str, Any]]] = {r: [] for r in regions}
     for b in all_buckets:
-        b_region = bucket_region(b["Name"], regions[0], sess)
+        b_region = bucket_region(
+            b["Name"], regions[0], sess, expected_owner=acct_id
+        )
         if b_region in buckets_by_region:
             buckets_by_region[b_region].append(b)
 
@@ -4223,6 +6284,7 @@ def scan_account(
                 aws_client("s3", region, sess),
                 buckets_by_region.get(region, []),
                 alias,
+                acct_id,
                 region,
                 sess,
             )
@@ -4257,6 +6319,7 @@ def scan_account(
                 aws_client("lambda", region, sess),
                 aws_client("rds", region, sess),
                 alias,
+                acct_id,
             )
 
         def governance_collector():
@@ -4388,12 +6451,19 @@ def main() -> None:
     base_session = boto3.Session()
     try:
         ec2 = base_session.client("ec2", config=RETRY_CONFIG)
-        resp = ec2.describe_regions(
+        resp = _safe_aws_call(
+            ec2.describe_regions,
+            default={"Regions": []},
+            account="-",
             Filters=[
                 {"Name": "opt-in-status", "Values": ["opt-in-not-required", "opted-in"]}
-            ]
+            ],
         )
-        enabled_regions = [r["RegionName"] for r in resp["Regions"]]
+        enabled_regions = [
+            r.get("RegionName", "")
+            for r in resp.get("Regions", [])
+            if r.get("RegionName")
+        ]
     except (ClientError, NoCredentialsError):
         enabled_regions = base_session.get_available_regions("ec2")
 
@@ -4470,7 +6540,10 @@ def main() -> None:
         org = base_session.client("organizations", config=RETRY_CONFIG)
         accounts = (
             a
-            for page in org.get_paginator("list_accounts").paginate()
+            for page in _safe_paginator(
+                require_paginator(org, "list_accounts").paginate,
+                account="-",
+            )
             for a in page["Accounts"]
             if a["Status"] == "ACTIVE"
         )
@@ -4480,7 +6553,13 @@ def main() -> None:
                 continue
             if aid in exclude_accounts:
                 continue
-            if sess := assume_role(aid, args.role_name, regions[0]):
+            if sess := assume_role(
+                aid,
+                args.role_name,
+                region=regions[0],
+                external_id=args.external_id,
+                duration_seconds=args.assume_role_duration,
+            ):
                 sessions[aid] = sess
     else:
         me = base_session.client("sts", config=RETRY_CONFIG).get_caller_identity()[

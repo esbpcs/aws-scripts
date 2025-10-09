@@ -1,17 +1,30 @@
 # AWS SDK for Python
-boto3
+boto3==1.40.47
+botocore==1.40.47
 
 # Used for creating the Excel report
-openpyxl
+openpyxl==3.1.5
 
 # Used for safely parsing XML (from VPN configurations)
-defusedxml
+defusedxml==0.7.1
 
 # Used for generating human-readable cron descriptions
-cron_descriptor
+cron_descriptor==2.0.6
 
 # Used for getting the local timezone for the report
-tzlocal
+tzlocal==5.3.1
 
 # Backport of the zoneinfo library for Python < 3.9
-tzdata
+tzdata==2025.2
+
+# Optional dependency to decompress Zstandard manifests from S3 Inventory/Storage Lens
+zstandard==0.23.0
+
+# Optional dependency to decompress LZ4 manifests from S3 Inventory/Storage Lens
+lz4==4.3.3
+
+# Optional dependency to decompress Brotli manifests from S3 Inventory/Storage Lens
+brotli==1.1.0
+
+# Optional dependency to decompress Snappy manifests from S3 Inventory/Storage Lens
+python-snappy==0.7.2

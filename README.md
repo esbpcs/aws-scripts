@@ -18,6 +18,15 @@ This is the core tool of the repository, designed to scan and inventory resource
 - Generates a comprehensive Excel workbook (`aws_inventory.xlsx`) with a separate sheet for each service inventoried.
 - Provides a summary sheet with resource counts per account and service.
 - Supports filtering by account ID and AWS region.
+- Applies adaptive retries for throttling and transient network errors so large multi-account scans finish reliably.
+- Discovers undocumented pagination tokens dynamically to avoid truncating inventories when AWS adds new paging fields.
+- Understands modern S3 destinations (including access points, S3 Express, and Outposts) when reading Inventory and Storage Lens
+  manifests, so exports stored behind ARNs continue to be processed without manual tweaks.
+
+**Requirements:**
+
+- Python 3.9 or later (the inventory scripts rely on the standard-library `zoneinfo` module).
+- The Python packages listed in [`Dependencies/Requirements.txt`](Dependencies/Requirements.txt). You can install them with `pip install -r Dependencies/Requirements.txt`; the scripts now check for these dependencies at startup and exit with a clear message if anything is missing.
 
 **Usage:**
 
@@ -30,6 +39,13 @@ python3 AWS-list-resources-all-canary.py --master --role-name MyRole --regions u
 
 # Scan specific accounts
 python3 AWS-list-resources-all-canary.py --master --include-accounts "123456789012,987654321098"
+
+# Provide an external ID and custom role session duration when assuming roles
+python3 AWS-list-resources-all-canary.py \
+  --master \
+  --include-accounts "123456789012" \
+  --external-id "my-shared-secret" \
+  --assume-role-duration 3600
 ````
 
 ### 2\. S3 Presigned URL Script Runner
@@ -38,6 +54,10 @@ These wrapper scripts are designed to securely download and execute scripts (lik
 
 - **`run-presigned-canary.sh`**: A robust script that can download and run Python, Bash, or PowerShell scripts from S3. It automatically handles Python virtual environments, dependency installation from `requirements.txt` files, and entrypoint detection for projects stored in folders or archives.
 - **`run-presigned-rc.sh`**: A simpler version of the script runner, focused on fetching a Python script and its associated `Requirements.txt` file from an S3 bucket.
+
+Both runners verify object ownership with `--expected-owner`/`EXPECTED_OWNER` before generating a pre-signed URL. This keeps the workflow compatible with the AWS CLI (which does not accept `--expected-bucket-owner` on `aws s3 presign`) while still preventing cross-account spoofing when you supply the expected AWS Account ID.
+
+> **Note:** The runners check that a Python 3 interpreter is available before executing downloaded code so that checksum validation and optional dependency installation always succeed.
 
 **Usage (`run-presigned-canary.sh`):**
 
@@ -68,4 +88,8 @@ sudo ./ena-express-config.sh --revert
 
 ### 4\. Dependencies
 
-- **`Dependencies/Requirements.txt`**: A text file containing the Python packages required by the `AWS-list-resources-all-*.py` scripts. These packages include `boto3`, `openpyxl`, `defusedxml`, `cron_descriptor`, `tzlocal`, and `tzdata`.
+- **`Dependencies/Requirements.txt`**: A text file containing the Python packages required by the `AWS-list-resources-all-*.py` scripts. These packages include `boto3` together with a matching `botocore` pin, `openpyxl`, `defusedxml`, `cron_descriptor`, `tzlocal`, and `tzdata`. Optional entries for handling S3 Inventory and Storage Lens manifests compressed with Zstandard, LZ4, Brotli, or Snappy are also provided (`zstandard`, `lz4`, `brotli`, and `python-snappy`).
+
+The inventory scripts track the continually updated AWS region catalogue, including the latest ISO and ISOB west/south partitions, so timezone conversions and pricing lookups stay accurate even as new regions launch.
+
+Every startup validation now emits a consistent `ERROR:` prefix, making it easier to spot missing dependencies or configuration issues before a scan begins.
