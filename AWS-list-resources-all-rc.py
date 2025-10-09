@@ -4136,7 +4136,11 @@ def get_iam_details(
     paginator = iam_client.get_paginator("list_policies")
     for scope in ["Local", "AWS"]:
         policy_type = "Customer Managed" if scope == "Local" else "AWS Managed"
-        for page in paginator.paginate(Scope=scope):
+        for page in _safe_paginator(
+            paginator.paginate,
+            account=alias,
+            Scope=scope,
+        ):
             for policy in page.get("Policies", []):
                 if scope == "AWS" and policy.get("AttachmentCount", 0) == 0:
                     continue
@@ -4712,7 +4716,11 @@ def get_cost_opportunities(
     try:
         ninety_days_ago = datetime.now(timezone.utc) - timedelta(days=90)
         paginator = ec2_client.get_paginator("describe_snapshots")
-        for page in paginator.paginate(OwnerIds=["self"]):
+        for page in _safe_paginator(
+            paginator.paginate,
+            account=alias,
+            OwnerIds=["self"],
+        ):
             for snap in page.get("Snapshots", []):
                 if snap["StartTime"] < ninety_days_ago:
                     out.append(
@@ -6144,7 +6152,10 @@ def main() -> None:
         org = base_session.client("organizations", config=RETRY_CONFIG)
         accounts = (
             a
-            for page in org.get_paginator("list_accounts").paginate()
+            for page in _safe_paginator(
+                require_paginator(org, "list_accounts").paginate,
+                account="-",
+            )
             for a in page["Accounts"]
             if a["Status"] == "ACTIVE"
         )

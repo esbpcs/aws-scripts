@@ -2835,8 +2835,10 @@ def get_cost_opportunities(
     # --- 4. Old EBS Snapshots ---
     try:
         snapshot_cost_per_gb = get_ebs_volume_cost("gp2.snapshot", 1, region, session)
-        for page in require_paginator(ec2_client, "describe_snapshots").paginate(
-            OwnerIds=["self"]
+        for page in _safe_paginator(
+            require_paginator(ec2_client, "describe_snapshots").paginate,
+            account=alias,
+            OwnerIds=["self"],
         ):
             for snap in page.get("Snapshots", []):
                 if snap["StartTime"] < ninety_days_ago:
@@ -3475,7 +3477,10 @@ def get_governance_details(
                     status = "Not Enabled"
             elif service_name == "GuardDuty":
                 detectors: List[str] = []
-                for page in require_paginator(client, "list_detectors").paginate():
+                for page in _safe_paginator(
+                    require_paginator(client, "list_detectors").paginate,
+                    account=alias,
+                ):
                     detectors.extend(page.get("DetectorIds", []))
                 status = "Not Found"
                 if detectors:
@@ -3522,14 +3527,21 @@ def get_governance_details(
                 details = f"Service Role: {session_info.get('serviceRole')}"
             elif service_name == "IAM Access Analyzer":
                 analyzers: List[Dict[str, Any]] = []
-                for page in require_paginator(client, "list_analyzers").paginate(type="ACCOUNT"):
+                for page in _safe_paginator(
+                    require_paginator(client, "list_analyzers").paginate,
+                    account=alias,
+                    type="ACCOUNT",
+                ):
                     analyzers.extend(page.get("analyzers", []))
                 status = "Enabled" if analyzers else "Not Enabled"
                 if analyzers:
                     details = f"Analyzers found: {[a.get('name') for a in analyzers]}"
             elif service_name == "Amazon Detective":
                 graphs: List[Dict[str, Any]] = []
-                for page in require_paginator(client, "list_graphs").paginate():
+                for page in _safe_paginator(
+                    require_paginator(client, "list_graphs").paginate,
+                    account=alias,
+                ):
                     graphs.extend(page.get("GraphList", []))
                 status = "Enabled" if graphs else "Not Enabled"
                 if graphs:
@@ -3733,8 +3745,10 @@ def get_iam_groups_details(iam_client: BaseClient, alias: str) -> List[Dict[str,
 
         # Enrich with members and policies
         members: List[str] = []
-        for page in require_paginator(iam_client, "get_group").paginate(
-            GroupName=group_name
+        for page in _safe_paginator(
+            require_paginator(iam_client, "get_group").paginate,
+            account=alias,
+            GroupName=group_name,
         ):
             members.extend(u["UserName"] for u in page.get("Users", []))
         group["Members"] = members
@@ -5678,7 +5692,10 @@ def main() -> None:
         org_client = base_session.client("organizations", config=RETRY_CONFIG)
         accounts = [
             a
-            for page in require_paginator(org_client, "list_accounts").paginate()
+            for page in _safe_paginator(
+                require_paginator(org_client, "list_accounts").paginate,
+                account="-",
+            )
             for a in page.get("Accounts", [])
             if a.get("Status") == "ACTIVE"
         ]
