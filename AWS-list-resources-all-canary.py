@@ -97,7 +97,7 @@ READ_TIMEOUT = int(os.getenv("AWS_READ_TIMEOUT", "60"))
 MAX_ATTEMPTS = int(os.getenv("AWS_MAX_ATTEMPTS", "8"))
 AWS_RETRY_MODE = os.getenv("AWS_RETRY_MODE", "adaptive")
 
-# Align with the October 2025 AWS security guidance by preferring regional STS
+# Align with the latest AWS security guidance by preferring regional STS
 # endpoints and honouring bucket regions when working with Amazon S3 ARNs.  The
 # environment variables are only populated if the operator has not already set
 # a specific preference in their execution environment.
@@ -665,7 +665,7 @@ def humanise_schedule(expr: str, tz: Optional[str] = None) -> Tuple[str, str]:
         except ValueError:
             # ``cron_descriptor`` raises ``ValueError`` for expressions that include
             # tokens it does not yet recognise (for example the ``TZ`` extension
-            # that EventBridge started returning in 2025). In that case we fall
+            # returned by EventBridge). In that case we fall
             # back to the raw expression so the schedule is still visible.
             friendly = cron_expr
     else:
@@ -819,7 +819,7 @@ def _iterate_operation_pages(
     """Yield result pages for an AWS operation, even when no paginator exists.
 
     Some AWS APIs expose ``NextToken``/``Marker`` style pagination without
-    providing a boto3 paginator definition. The October 2025 guidance recommends
+    providing a boto3 paginator definition. AWS guidance recommends
     handling these operations explicitly to avoid runtime failures when relying
     solely on ``client.can_paginate``. This helper first attempts to use the
     official paginator and falls back to an automatic token loop when the

@@ -115,12 +115,16 @@ ORIGINAL_PWD=$(pwd)
 SCRATCH_DIR=$(mktemp -d "/tmp/$(basename "$0").$$.XXXXXX")
 trap 'rm -rf "$SCRATCH_DIR"' EXIT INT TERM ERR
 log_info "Created temporary directory at $SCRATCH_DIR"
-PYTHON_CMD=$(command -v python3 || command -v python)
+PYTHON_CMD=$(command -v python3 || command -v python || true)
+if [[ -z "$PYTHON_CMD" ]]; then
+  log_error "Python 3 interpreter not found in PATH. Install Python 3 to continue."
+  exit 1
+fi
 
 if [[ -n "$EXPECTED_OWNER" ]]; then
   OWNER_ARGS=(--expected-bucket-owner "$EXPECTED_OWNER")
 else
-OWNER_ARGS=()
+  OWNER_ARGS=()
 fi
 
 CURL_COMMON_ARGS=(

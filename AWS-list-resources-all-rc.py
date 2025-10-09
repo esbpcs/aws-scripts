@@ -88,7 +88,7 @@ READ_TIMEOUT = int(os.getenv("AWS_READ_TIMEOUT", "60"))
 MAX_ATTEMPTS = int(os.getenv("AWS_MAX_ATTEMPTS", "8"))
 AWS_RETRY_MODE = os.getenv("AWS_RETRY_MODE", "adaptive")
 
-# Adopt the October 2025 guidance to prefer regional STS endpoints and honour
+# Adopt the latest AWS guidance to prefer regional STS endpoints and honour
 # S3 ARN regions unless the operator has explicitly set different values.
 os.environ.setdefault("AWS_STS_REGIONAL_ENDPOINTS", "regional")
 os.environ.setdefault("AWS_S3_USE_ARN_REGION", "true")

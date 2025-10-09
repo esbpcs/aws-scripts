@@ -62,11 +62,14 @@ if (( PRESIGN_TTL < 1 || PRESIGN_TTL > 604800 )); then
     exit 1
 fi
 
-# Prefer python3 if available, otherwise fallback to python.
+# Prefer python3 if available, otherwise fallback to python. Abort if neither is present.
 if command -v python3 &>/dev/null; then
     PYTHON_CMD=python3
-else
+elif command -v python &>/dev/null; then
     PYTHON_CMD=python
+else
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Error: Python 3 interpreter not found. Install Python 3 or ensure it is on PATH." >&2
+    exit 1
 fi
 echo "$(date '+%Y-%m-%d %H:%M:%S') - Determined Python command: $PYTHON_CMD" >&2
 

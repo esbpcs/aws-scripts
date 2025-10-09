@@ -52,6 +52,8 @@ These wrapper scripts are designed to securely download and execute scripts (lik
 
 Both runners verify object ownership with `--expected-owner`/`EXPECTED_OWNER` before generating a pre-signed URL. This keeps the workflow compatible with the AWS CLI (which does not accept `--expected-bucket-owner` on `aws s3 presign`) while still preventing cross-account spoofing when you supply the expected AWS Account ID.
 
+> **Note:** The runners check that a Python 3 interpreter is available before executing downloaded code so that checksum validation and optional dependency installation always succeed.
+
 **Usage (`run-presigned-canary.sh`):**
 
 ```bash
@@ -83,4 +85,4 @@ sudo ./ena-express-config.sh --revert
 
 - **`Dependencies/Requirements.txt`**: A text file containing the Python packages required by the `AWS-list-resources-all-*.py` scripts. These packages include `boto3` together with a matching `botocore` pin, `openpyxl`, `defusedxml`, `cron_descriptor`, `tzlocal`, and `tzdata`. Optional entries for handling S3 Inventory and Storage Lens manifests compressed with Zstandard, LZ4, Brotli, or Snappy are also provided (`zstandard`, `lz4`, `brotli`, and `python-snappy`).
 
-The inventory scripts track the October 2025 region catalogue, including the latest ISO and ISOB west/south partitions, so timezone conversions and pricing lookups stay accurate even in newly launched regions.
+The inventory scripts track the continually updated AWS region catalogue, including the latest ISO and ISOB west/south partitions, so timezone conversions and pricing lookups stay accurate even as new regions launch.
