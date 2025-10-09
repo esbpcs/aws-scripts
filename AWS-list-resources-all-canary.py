@@ -152,6 +152,8 @@ REGION_TZ: Dict[str, str] = {
     "us-iso-east-1": "America/New_York",
     "us-iso-west-1": "America/Los_Angeles",
     "us-isob-east-1": "America/New_York",
+    "us-isob-west-1": "America/Los_Angeles",
+    "us-iso-south-1": "America/Chicago",
     "ca-central-1": "America/Toronto",
     "ca-west-1": "America/Edmonton",
     "sa-east-1": "America/Sao_Paulo",
@@ -355,6 +357,15 @@ def _safe_aws_call(
         "NoSuchCORSConfiguration",
         "OwnershipControlsNotFoundError",
         "ObjectLockConfigurationNotFoundError",
+        "NoSuchAccessPointPolicy",
+        "NoSuchStorageLensConfiguration",
+        "StorageLensConfigurationNotFound",
+        "NoSuchIntelligentTieringConfiguration",
+        "NoSuchBucketIntelligentTieringConfiguration",
+        "NoSuchMultiRegionAccessPointPolicy",
+        "NoSuchMultiRegionAccessPointRouteConfiguration",
+        "ReplicationConfigurationNotFoundError",
+        "NoSuchAccessPoint",
     }
     try:
         return (
@@ -2301,6 +2312,8 @@ REGION_NAMES = {
     "us-iso-east-1": "US ISO East",
     "us-iso-west-1": "US ISO West",
     "us-isob-east-1": "US ISOB East",
+    "us-isob-west-1": "US ISOB West",
+    "us-iso-south-1": "US ISO South",
     "ca-central-1": "Canada (Central)",
     "ca-west-1": "Canada West (Calgary)",
     "eu-central-1": "EU (Frankfurt)",
