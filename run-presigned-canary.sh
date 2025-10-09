@@ -127,6 +127,8 @@ CURL_COMMON_ARGS=(
   --fail
   --show-error
   --silent
+  --proto '=https'
+  --tlsv1.2
   --connect-timeout 10
   --retry 3
   --retry-delay 2
@@ -393,7 +395,7 @@ python)
         log_info "Found requirements file at S3 path. Downloading..."
         REQ_URL=$(aws s3 presign "s3://${BUCKET}/${REQ_S3_KEY}" --region "$BUCKET_REGION" --expires-in "$EXPIRES")
 
-        if ! curl --fail --silent --show-error "$REQ_URL" -o "$LOCAL_REQ_PATH"; then
+        if ! curl "${CURL_COMMON_ARGS[@]}" "$REQ_URL" -o "$LOCAL_REQ_PATH"; then
           log_error "Failed to download requirements file from S3. Aborting."
           exit 1
         fi

@@ -30,6 +30,13 @@ python3 AWS-list-resources-all-canary.py --master --role-name MyRole --regions u
 
 # Scan specific accounts
 python3 AWS-list-resources-all-canary.py --master --include-accounts "123456789012,987654321098"
+
+# Provide an external ID and custom role session duration when assuming roles
+python3 AWS-list-resources-all-canary.py \
+  --master \
+  --include-accounts "123456789012" \
+  --external-id "my-shared-secret" \
+  --assume-role-duration 3600
 ````
 
 ### 2\. S3 Presigned URL Script Runner

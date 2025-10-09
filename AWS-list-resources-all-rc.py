@@ -83,6 +83,12 @@ except ImportError:  # pragma: no cover - optional dependency
 CONNECT_TIMEOUT = int(os.getenv("AWS_CONNECT_TIMEOUT", "10"))
 READ_TIMEOUT = int(os.getenv("AWS_READ_TIMEOUT", "60"))
 MAX_ATTEMPTS = int(os.getenv("AWS_MAX_ATTEMPTS", "8"))
+AWS_RETRY_MODE = os.getenv("AWS_RETRY_MODE", "adaptive")
+
+# Adopt the October 2025 guidance to prefer regional STS endpoints and honour
+# S3 ARN regions unless the operator has explicitly set different values.
+os.environ.setdefault("AWS_STS_REGIONAL_ENDPOINTS", "regional")
+os.environ.setdefault("AWS_S3_USE_ARN_REGION", "true")
 
 # -- parallelism -----------------------------------------------------
 CPU_COUNT = multiprocessing.cpu_count()
@@ -92,7 +98,7 @@ _POOL_SIZE = MAX_REGIONS_IN_FLIGHT * MAX_TASKS_IN_REGION + 5  # HTTP-pool
 
 RETRY_CONFIG = Config(
     retries={
-        "mode": os.getenv("AWS_RETRY_MODE", "adaptive"),
+        "mode": AWS_RETRY_MODE,
         "max_attempts": MAX_ATTEMPTS,
     },
     connect_timeout=CONNECT_TIMEOUT,
@@ -118,6 +124,10 @@ MAX_KEYS_FOR_FULL_SCAN = int(os.getenv("AWS_MAX_KEYS_FOR_FULL_SCAN", "20000"))
 # misc
 SECS_PER_YEAR = 31_536_000
 DEFAULT_ROLE = "OrganizationAccountAccessRole"
+ASSUME_ROLE_DURATION = max(
+    900,
+    min(int(os.getenv("ASSUME_ROLE_DURATION", "3600")), 43200),
+)
 
 REGION_TZ: Dict[str, str] = {
     "us-east-1": "America/New_York",
@@ -142,6 +152,7 @@ REGION_TZ: Dict[str, str] = {
     "eu-south-2": "Europe/Madrid",
     "ap-south-1": "Asia/Kolkata",
     "ap-south-2": "Asia/Kolkata",
+    "ap-south-3": "Asia/Kolkata",
     "ap-northeast-1": "Asia/Tokyo",
     "ap-northeast-2": "Asia/Seoul",
     "ap-northeast-3": "Asia/Tokyo",
@@ -151,9 +162,11 @@ REGION_TZ: Dict[str, str] = {
     "ap-southeast-4": "Australia/Melbourne",
     "ap-southeast-5": "Asia/Kuala_Lumpur",
     "ap-southeast-6": "Pacific/Auckland",
+    "ap-southeast-7": "Asia/Bangkok",
     "ap-east-1": "Asia/Hong_Kong",
     "me-south-1": "Asia/Bahrain",
     "me-central-1": "Asia/Dubai",
+    "me-south-2": "Asia/Riyadh",
     "af-south-1": "Africa/Johannesburg",
     "af-north-1": "Africa/Cairo",
     "il-central-1": "Asia/Jerusalem",
@@ -840,27 +853,44 @@ def _plan_term_seconds(plan: dict) -> Optional[int]:
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _generate_role_session_name(account_id: str) -> str:
+    """Build a unique, policy-compliant session name for AssumeRole."""
+
+    suffix = f"{int(time.time())}-{os.getpid()}-{random.getrandbits(16):04x}"
+    candidate = f"Inventory-{account_id}-{suffix}"
+    sanitized = re.sub(r"[^A-Za-z0-9+=,.@-]", "-", candidate)
+    return sanitized[:64]
+
+
 def assume_role(
     account_id: str,
     role_name: str = DEFAULT_ROLE,
+    *,
     region: str = "us-east-1",
+    external_id: Optional[str] = None,
+    duration_seconds: Optional[int] = None,
 ) -> Optional[boto3.Session]:
     sts = boto3.client("sts", region_name=region, config=RETRY_CONFIG)
+    session_name = _generate_role_session_name(account_id)
+    effective_duration = duration_seconds or ASSUME_ROLE_DURATION
+    effective_duration = max(900, min(int(effective_duration), 43200))
 
-    def _assume() -> Dict[str, str]:
-        return sts.assume_role(
-            RoleArn=f"arn:aws:iam::{account_id}:role/{role_name}",
-            RoleSessionName="InventorySession",
-        )["Credentials"]
+    assume_kwargs: Dict[str, Any] = {
+        "RoleArn": f"arn:aws:iam::{account_id}:role/{role_name}",
+        "RoleSessionName": session_name,
+        "DurationSeconds": effective_duration,
+    }
+    if external_id:
+        assume_kwargs["ExternalId"] = external_id
 
     try:
         creds: Dict[str, str] = {}
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
-                creds = _assume()
+                creds = sts.assume_role(**assume_kwargs)["Credentials"]
                 break
             except ClientError as exc:
-                code = exc.response["Error"]["Code"]
+                code = exc.response["Error"].get("Code", "")
                 if (
                     code in {"AccessDenied", "AccessDeniedException"}
                     or attempt == MAX_ATTEMPTS
@@ -5706,6 +5736,23 @@ def parse_cli() -> argparse.Namespace:
         help=f"IAM role to assume in member accounts (default: {DEFAULT_ROLE}).",
     )
     parser.add_argument(
+        "--external-id",
+        default=None,
+        help=(
+            "External ID to supply when assuming roles. This is strongly "
+            "recommended for cross-account access policies."
+        ),
+    )
+    parser.add_argument(
+        "--assume-role-duration",
+        type=int,
+        default=None,
+        help=(
+            "Override the STS AssumeRole duration in seconds (allowed range "
+            "900-43200)."
+        ),
+    )
+    parser.add_argument(
         "-r",
         "--regions",
         help="Comma-separated list of regions to scan (e.g., us-east-1,us-west-2). Default: all enabled regions.",
@@ -6107,7 +6154,13 @@ def main() -> None:
                 continue
             if aid in exclude_accounts:
                 continue
-            if sess := assume_role(aid, args.role_name, regions[0]):
+            if sess := assume_role(
+                aid,
+                args.role_name,
+                region=regions[0],
+                external_id=args.external_id,
+                duration_seconds=args.assume_role_duration,
+            ):
                 sessions[aid] = sess
     else:
         me = base_session.client("sts", config=RETRY_CONFIG).get_caller_identity()[

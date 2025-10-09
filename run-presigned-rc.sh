@@ -34,6 +34,8 @@ CURL_COMMON_ARGS=(
     --fail
     --show-error
     --silent
+    --proto '=https'
+    --tlsv1.2
     --connect-timeout 10
     --retry 3
     --retry-delay 2
