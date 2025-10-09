@@ -74,6 +74,16 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     lz4f = None  # type: ignore
 
+try:
+    import brotli  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    brotli = None  # type: ignore
+
+try:
+    import snappy  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    snappy = None  # type: ignore
+
 # =================================================================================================
 # CONFIGURATION
 # =================================================================================================
@@ -846,35 +856,40 @@ def bucket_region(
 
 
 def _decompress_manifest_bytes(
-    payload: bytes, key: str, *, account: str = "-"
+    payload: bytes,
+    key: str,
+    *,
+    account: str = "-",
+    content_encoding: Optional[str] = None,
 ) -> Optional[bytes]:
-    """Decompress manifest payloads (gzip, bz2, zstd, lz4, xz)."""
+    """Decompress manifest payloads (gzip, bz2, zstd, lz4, xz, brotli, snappy)."""
 
     lower_key = key.lower()
+    encoding = (content_encoding or "").strip().lower()
+
+    def _warn_missing(pkg: str, algorithm: str) -> None:
+        log(
+            "warning",
+            f"Manifest uses {algorithm} compression but the {pkg} package is not installed.",
+            account=account,
+        )
+
     try:
-        if lower_key.endswith(".gz"):
+        if lower_key.endswith(".gz") or encoding in {"gzip", "x-gzip"}:
             return gzip.decompress(payload)
-        if lower_key.endswith(".bz2"):
+        if lower_key.endswith(".bz2") or encoding in {"bzip2", "x-bzip2"}:
             return bz2.decompress(payload)
-        if lower_key.endswith((".zst", ".zstd")):
+        if lower_key.endswith((".zst", ".zstd")) or encoding in {"zst", "zstd"}:
             if zstd is None:
-                log(
-                    "warning",
-                    "Manifest uses zstd compression but the zstandard package is not installed.",
-                    account=account,
-                )
+                _warn_missing("zstandard", "zstd")
                 return None
             return zstd.ZstdDecompressor().decompress(payload)
-        if lower_key.endswith(".lz4"):
+        if lower_key.endswith(".lz4") or encoding == "lz4":
             if lz4f is None:
-                log(
-                    "warning",
-                    "Manifest uses lz4 compression but the lz4 package is not installed.",
-                    account=account,
-                )
+                _warn_missing("lz4", "lz4")
                 return None
             return lz4f.decompress(payload)
-        if lower_key.endswith((".xz", ".lzma")):
+        if lower_key.endswith((".xz", ".lzma")) or encoding in {"xz", "lzma"}:
             try:
                 return lzma.decompress(payload)
             except (lzma.LZMAError, ValueError) as exc:
@@ -884,6 +899,16 @@ def _decompress_manifest_bytes(
                     account=account,
                 )
                 return None
+        if lower_key.endswith((".br", ".brotli")) or encoding in {"br", "brotli"}:
+            if brotli is None:
+                _warn_missing("brotli", "brotli")
+                return None
+            return brotli.decompress(payload)
+        if lower_key.endswith(".snappy") or encoding == "snappy":
+            if snappy is None:
+                _warn_missing("python-snappy", "snappy")
+                return None
+            return snappy.decompress(payload)
     except Exception as exc:  # pragma: no cover - defensive logging
         log(
             "warning",
@@ -905,6 +930,9 @@ def _infer_inventory_file_format(
         (".zst", "ZSTD"),
         (".zstd", "ZSTD"),
         (".lz4", "LZ4"),
+        (".br", "BROTLI"),
+        (".brotli", "BROTLI"),
+        (".snappy", "SNAPPY"),
         (".gz", "GZIP"),
         (".bz2", "BZIP2"),
     ):
@@ -943,6 +971,8 @@ def _manifest_matches_context(
     bucket: Optional[str] = None,
     region: Optional[str] = None,
     prefix: Optional[str] = None,
+    destination_account_id: Optional[str] = None,
+    destination_bucket: Optional[str] = None,
 ) -> bool:
     """Ensure an inventory manifest belongs to the expected account/bucket/region/prefix."""
 
@@ -959,6 +989,16 @@ def _manifest_matches_context(
     if account_candidates and str(account_id) not in account_candidates:
         return False
 
+    if destination_account_id:
+        dest_candidates = (
+            _as_string_set(manifest.get("destinationAccountIds"))
+            | _as_string_set(manifest.get("destinationAccountId"))
+            | _as_string_set(manifest_context.get("destinationAccountIds"))
+            | _as_string_set(manifest_context.get("destinationAccountId"))
+        )
+        if dest_candidates and str(destination_account_id) not in dest_candidates:
+            return False
+
     if bucket:
         bucket_candidates = (
             _as_string_set(manifest.get("sourceBuckets"))
@@ -967,6 +1007,27 @@ def _manifest_matches_context(
             | _as_string_set(manifest_context.get("sourceBucket"))
         )
         if bucket_candidates and bucket not in bucket_candidates:
+            return False
+
+    if destination_bucket:
+        def _normalize_bucket(value: str) -> str:
+            if value.startswith("arn:"):
+                arn_parts = _split_s3_arn(value)
+                if arn_parts:
+                    return arn_parts[0]
+            return value
+
+        dest_bucket_candidates = {
+            _normalize_bucket(candidate)
+            for candidate in (
+                _as_string_set(manifest.get("destinationBuckets"))
+                | _as_string_set(manifest.get("destinationBucket"))
+                | _as_string_set(manifest_context.get("destinationBuckets"))
+                | _as_string_set(manifest_context.get("destinationBucket"))
+            )
+            if candidate
+        }
+        if dest_bucket_candidates and destination_bucket not in dest_bucket_candidates:
             return False
 
     if region:
@@ -1176,13 +1237,14 @@ def _s3_select_sum_and_count(
 
     input_serialization: Dict[str, Any]
     if fmt == "CSV":
-        if comp not in {"NONE", "GZIP", "BZIP2", "LZ4", "ZSTD"}:
+        supported_compressions = {"NONE", "GZIP", "BZIP2", "LZ4", "ZSTD"}
+        if comp not in supported_compressions:
             log(
                 "debug",
-                f"Unknown compression '{comp}' for inventory file {key}; defaulting to NONE",
+                f"Unsupported compression '{comp}' for inventory file {key}; skipping",
                 account=account,
             )
-            comp = "NONE"
+            return 0, 0
         input_serialization = {
             "CSV": {"FileHeaderInfo": "USE"},
             "CompressionType": comp,
@@ -1349,6 +1411,9 @@ def inventory_metrics(
                 "manifest.json.bz2",
                 "manifest.json.lz4",
                 "manifest.json.xz",
+                "manifest.json.br",
+                "manifest.json.brotli",
+                "manifest.json.snappy",
             )
             manifest_objects = [
                 obj
@@ -1379,7 +1444,15 @@ def inventory_metrics(
                     except Exception:
                         pass
                 manifest_bytes = _decompress_manifest_bytes(
-                    manifest_bytes, manifest_obj.get("Key", ""), account=alias
+                    manifest_bytes,
+                    manifest_obj.get("Key", ""),
+                    account=alias,
+                    content_encoding=(
+                        manifest_resp.get("ContentEncoding")
+                        or manifest_resp.get("ResponseMetadata", {})
+                        .get("HTTPHeaders", {})
+                        .get("content-encoding")
+                    ),
                 )
                 if manifest_bytes is None:
                     continue
@@ -1399,6 +1472,8 @@ def inventory_metrics(
                     bucket=bucket,
                     region=region_hint,
                     prefix=source_prefix or None,
+                    destination_account_id=dest_account_id,
+                    destination_bucket=dest_bucket,
                 ):
                     log(
                         "debug",
@@ -1445,11 +1520,17 @@ def inventory_metrics(
                         fmt_hint = fmt_hint.upper() or None
                     else:
                         fmt_hint = None
-                    comp_hint = entry.get("compression")
-                    if isinstance(comp_hint, str):
-                        comp_hint = comp_hint.upper() or None
-                    else:
-                        comp_hint = None
+                    comp_raw = entry.get("compression")
+                    comp_hint: Optional[str] = None
+                    if isinstance(comp_raw, str):
+                        comp_hint = comp_raw.upper() or None
+                    elif isinstance(comp_raw, (list, tuple, set)):
+                        for item in comp_raw:
+                            if item:
+                                comp_hint = str(item).upper()
+                                break
+                    elif comp_raw is not None:
+                        comp_hint = str(comp_raw).upper()
                     candidate_files.append((key, fmt_hint, comp_hint))
 
                 if not candidate_files:
@@ -1503,6 +1584,23 @@ def inventory_metrics(
                         fmt_candidate = inventory_format
                     if fmt_candidate in {"PARQUET", "ORC"}:
                         comp_candidate = None
+                    elif comp_candidate and comp_candidate not in {
+                        "NONE",
+                        "GZIP",
+                        "BZIP2",
+                        "LZ4",
+                        "ZSTD",
+                    }:
+                        log(
+                            "debug",
+                            (
+                                "Skipping inventory fragment %s due to unsupported "
+                                "compression %s"
+                            )
+                            % (key, comp_candidate),
+                            account=alias,
+                        )
+                        continue
                     normalized[key] = (fmt_candidate or inventory_format, comp_candidate)
                     seen_keys.add(key)
 
@@ -1614,6 +1712,9 @@ def storage_lens_metrics(
             "manifest.json.bz2",
             "manifest.json.lz4",
             "manifest.json.xz",
+            "manifest.json.br",
+            "manifest.json.brotli",
+            "manifest.json.snappy",
         )
 
         for selected_config_id, export_config in export_candidates:
@@ -1693,7 +1794,15 @@ def storage_lens_metrics(
                     except Exception:
                         pass
                 manifest_bytes = _decompress_manifest_bytes(
-                    manifest_bytes, manifest_obj.get("Key", ""), account=account_id
+                    manifest_bytes,
+                    manifest_obj.get("Key", ""),
+                    account=account_id,
+                    content_encoding=(
+                        manifest_resp.get("ContentEncoding")
+                        or manifest_resp.get("ResponseMetadata", {})
+                        .get("HTTPHeaders", {})
+                        .get("content-encoding")
+                    ),
                 )
                 if manifest_bytes is None:
                     continue
@@ -1711,6 +1820,8 @@ def storage_lens_metrics(
                     account_id=account_id,
                     bucket=bucket,
                     region=region,
+                    destination_account_id=export_account_id,
+                    destination_bucket=export_bucket,
                 ):
                     log(
                         "debug",
@@ -1772,11 +1883,17 @@ def storage_lens_metrics(
                     else:
                         fmt_hint = None
 
-                    comp_hint = entry.get("compression")
-                    if isinstance(comp_hint, str):
-                        comp_hint = comp_hint.upper() or None
-                    else:
-                        comp_hint = None
+                    comp_raw = entry.get("compression")
+                    comp_hint: Optional[str] = None
+                    if isinstance(comp_raw, str):
+                        comp_hint = comp_raw.upper() or None
+                    elif isinstance(comp_raw, (list, tuple, set)):
+                        for item in comp_raw:
+                            if item:
+                                comp_hint = str(item).upper()
+                                break
+                    elif comp_raw is not None:
+                        comp_hint = str(comp_raw).upper()
 
                     candidate_files.append((key, modified_dt, fmt_hint, comp_hint))
 
@@ -1847,6 +1964,22 @@ def storage_lens_metrics(
                         fmt_candidate = export_format
                     if fmt_candidate in {"PARQUET", "ORC"}:
                         comp_candidate = None
+                    elif comp_candidate and comp_candidate not in {
+                        "NONE",
+                        "GZIP",
+                        "BZIP2",
+                        "LZ4",
+                        "ZSTD",
+                    }:
+                        log(
+                            "debug",
+                            (
+                                "Skipping Storage Lens fragment %s due to unsupported "
+                                "compression %s"
+                            )
+                            % (key, comp_candidate),
+                        )
+                        continue
                     chosen_key = key
                     chosen_format = fmt_candidate or export_format
                     chosen_compression = comp_candidate
@@ -1866,7 +1999,15 @@ def storage_lens_metrics(
                 if chosen_format == "CSV":
                     compression_value = (chosen_compression or "NONE").upper()
                     if compression_value not in {"NONE", "GZIP", "BZIP2", "LZ4", "ZSTD"}:
-                        compression_value = "NONE"
+                        log(
+                            "debug",
+                            (
+                                "Skipping Storage Lens manifest %s due to unsupported "
+                                "compression %s"
+                            )
+                            % (chosen_key, compression_value),
+                        )
+                        continue
                     input_serialization = {
                         "CSV": {"FileHeaderInfo": "USE"},
                         "CompressionType": compression_value,

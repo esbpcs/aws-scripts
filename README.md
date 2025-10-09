@@ -68,4 +68,4 @@ sudo ./ena-express-config.sh --revert
 
 ### 4\. Dependencies
 
-- **`Dependencies/Requirements.txt`**: A text file containing the Python packages required by the `AWS-list-resources-all-*.py` scripts. These packages include `boto3`, `openpyxl`, `defusedxml`, `cron_descriptor`, `tzlocal`, and `tzdata`.
+- **`Dependencies/Requirements.txt`**: A text file containing the Python packages required by the `AWS-list-resources-all-*.py` scripts. These packages include `boto3`, `openpyxl`, `defusedxml`, `cron_descriptor`, `tzlocal`, and `tzdata`. Optional entries for handling S3 Inventory and Storage Lens manifests compressed with Zstandard, LZ4, Brotli, or Snappy are also provided (`zstandard`, `lz4`, `brotli`, and `python-snappy`).

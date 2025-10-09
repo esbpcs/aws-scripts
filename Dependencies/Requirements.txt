@@ -21,3 +21,9 @@ zstandard==0.23.0
 
 # Optional dependency to decompress LZ4 manifests from S3 Inventory/Storage Lens
 lz4==4.3.3
+
+# Optional dependency to decompress Brotli manifests from S3 Inventory/Storage Lens
+brotli==1.1.0
+
+# Optional dependency to decompress Snappy manifests from S3 Inventory/Storage Lens
+python-snappy==0.7.2
