@@ -51,8 +51,11 @@ from botocore.paginate import Paginator
 from botocore.config import Config
 from botocore.exceptions import (
     ClientError,
+    ConnectionClosedError,
+    ConnectTimeoutError,
     EndpointConnectionError,
     NoCredentialsError,
+    ReadTimeoutError,
 )
 from cron_descriptor import get_description as _cron_desc
 from defusedxml import ElementTree as ET
@@ -312,6 +315,13 @@ def retry_with_backoff(
         "SlowDown",
         "ProvisionedThroughputExceededException",
     }
+    transient_errors = (
+        EndpointConnectionError,
+        ConnectionClosedError,
+        ConnectTimeoutError,
+        ReadTimeoutError,
+    )
+
     for attempt in range(1, max_attempts + 1):
         try:
             return fn(**kwargs)
@@ -331,6 +341,28 @@ def retry_with_backoff(
             log(
                 "warning",
                 f"Throttled ({code}) {attempt}/{max_attempts}; retrying in {delay:.1f}s",
+                account=account,
+            )
+            time.sleep(delay)
+        except transient_errors as exc:
+            if attempt == max_attempts:
+                log(
+                    "error",
+                    (
+                        f"Max retries reached for {getattr(fn, '__name__', fn)}: "
+                        f"{exc.__class__.__name__}"
+                    ),
+                    account=account,
+                )
+                return default or {}
+            delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+            delay += delay * 0.3 * random.random()
+            log(
+                "warning",
+                (
+                    f"Network error ({exc.__class__.__name__}) {attempt}/{max_attempts}; "
+                    f"retrying in {delay:.1f}s"
+                ),
                 account=account,
             )
             time.sleep(delay)
@@ -385,7 +417,12 @@ def _safe_aws_call(
             account=account,
         )
         return default or {}
-    except EndpointConnectionError as exc:
+    except (
+        EndpointConnectionError,
+        ConnectionClosedError,
+        ConnectTimeoutError,
+        ReadTimeoutError,
+    ) as exc:
         log("warning", f"Endpoint error: {exc}", account=account)
         return default or {}
 
@@ -396,7 +433,13 @@ def _safe_paginator(
     """Yields pages from a Boto3 paginator, swallowing network and client faults."""
     try:
         yield from paginate_fn(**kwargs)
-    except (ClientError, EndpointConnectionError) as exc:
+    except (
+        ClientError,
+        EndpointConnectionError,
+        ConnectionClosedError,
+        ConnectTimeoutError,
+        ReadTimeoutError,
+    ) as exc:
         log("warning", f"Paginator aborted: {exc}", account=account)
 
 
@@ -883,6 +926,23 @@ def _iterate_operation_pages(
 
         if not token_state:
             break
+
+        if isinstance(page, dict):
+            current_output_names = {name for name, _ in output_tokens}
+            discovered_tokens: List[Tuple[str, Set[str]]] = []
+            for key in page.keys():
+                if not _is_pagination_param(key):
+                    continue
+                if key not in token_state:
+                    token_state[key] = None
+                alias_key = key.lower()
+                input_alias_map.setdefault(alias_key, key)
+                for alias in _token_aliases(key):
+                    input_alias_map.setdefault(alias, key)
+                if key not in current_output_names:
+                    discovered_tokens.append((key, _token_aliases(key)))
+            if discovered_tokens:
+                output_tokens.extend(discovered_tokens)
 
         next_tokens: Dict[str, Optional[str]] = {param: None for param in token_state}
         for output_name, aliases in output_tokens:
@@ -3709,7 +3769,12 @@ def get_governance_details(
             out.append({"Service": service_name, "Status": status, "Details": details})
 
         # Gracefully handle regions where a service endpoint does not exist.
-        except EndpointConnectionError:
+        except (
+            EndpointConnectionError,
+            ConnectionClosedError,
+            ConnectTimeoutError,
+            ReadTimeoutError,
+        ):
             out.append(
                 {
                     "Service": service_name,

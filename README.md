@@ -18,6 +18,8 @@ This is the core tool of the repository, designed to scan and inventory resource
 - Generates a comprehensive Excel workbook (`aws_inventory.xlsx`) with a separate sheet for each service inventoried.
 - Provides a summary sheet with resource counts per account and service.
 - Supports filtering by account ID and AWS region.
+- Applies adaptive retries for throttling and transient network errors so large multi-account scans finish reliably.
+- Discovers undocumented pagination tokens dynamically to avoid truncating inventories when AWS adds new paging fields.
 
 **Usage:**
 
