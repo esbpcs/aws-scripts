@@ -39,15 +39,23 @@ from typing import (
     Iterator,
     List,
     Optional,
+    NoReturn,
     Set,
     Tuple,
     Union,
 )
 from xml.sax.saxutils import unescape
 
-if sys.version_info < (3, 9):  # pragma: no cover - environment guard
-    sys.stderr.write("This script requires Python 3.9 or later.\n")
+
+def _exit_with_error(message: str) -> NoReturn:  # pragma: no cover - startup helper
+    """Emit a consistent fatal error message and terminate the process."""
+
+    sys.stderr.write(f"ERROR: {message.strip()}\n")
     sys.exit(1)
+
+
+if sys.version_info < (3, 9):  # pragma: no cover - environment guard
+    _exit_with_error("Python 3.9 or later is required to run this script.")
 
 try:
     import boto3
@@ -72,11 +80,10 @@ try:
     from tzlocal import get_localzone
 except (ModuleNotFoundError, ImportError) as exc:  # pragma: no cover - dependency guard
     missing = getattr(exc, "name", None) or str(exc)
-    sys.stderr.write(
-        f"Missing required dependency '{missing}'. Install the packages listed in "
-        "Dependencies/Requirements.txt and retry.\n"
+    _exit_with_error(
+        "Missing required dependency '{module}'. Install the packages listed in "
+        "Dependencies/Requirements.txt and retry.".format(module=missing)
     )
-    sys.exit(1)
 
 from zoneinfo import ZoneInfo
 
@@ -157,6 +164,36 @@ ASSUME_ROLE_DURATION = max(
     min(int(os.getenv("ASSUME_ROLE_DURATION", "3600")), 43200),
 )
 
+# --- AWS Error Categorisation ---
+BENIGN_S3_ERRORS: Set[str] = {
+    "NoSuchLifecycleConfiguration",
+    "NoSuchTagSet",
+    "NoSuchBucketPolicy",
+    "NoSuchPublicAccessBlockConfiguration",
+    "ServerSideEncryptionConfigurationNotFoundError",
+    "NoSuchBucketLogging",
+    "NoSuchWebsiteConfiguration",
+    "NoSuchCORSConfiguration",
+    "OwnershipControlsNotFoundError",
+    "ObjectLockConfigurationNotFoundError",
+    "NoSuchAccessPointPolicy",
+    "NoSuchStorageLensConfiguration",
+    "StorageLensConfigurationNotFound",
+    "NoSuchIntelligentTieringConfiguration",
+    "NoSuchBucketIntelligentTieringConfiguration",
+    "NoSuchMultiRegionAccessPointPolicy",
+    "NoSuchMultiRegionAccessPointRouteConfiguration",
+    "ReplicationConfigurationNotFoundError",
+    "NoSuchAccessPoint",
+    "NoSuchMetricsConfiguration",
+    "NoSuchBucketMetricsConfiguration",
+    "NoSuchAnalyticsConfiguration",
+    "NoSuchBucketAnalyticsConfiguration",
+    "NoSuchInventoryConfiguration",
+    "NoSuchBucketInventoryConfiguration",
+    "NoSuchNotificationConfiguration",
+}
+
 # --- Timezone Mapping ---
 REGION_TZ: Dict[str, str] = {
     "us-east-1": "America/New_York",
@@ -214,10 +251,7 @@ try:
     UNIQUE_KEYS = config["UNIQUE_KEYS"]
     _REGION_SCOPED_SHEETS = set(config["REGION_SCOPED_SHEETS"])
 except (FileNotFoundError, KeyError, json.JSONDecodeError) as exc:
-    sys.stderr.write(
-        f"ERROR: Unable to load configuration from config.json: {exc}\n"
-    )
-    sys.exit(1)
+    _exit_with_error(f"Unable to load configuration from config.json: {exc}")
 
 # =================================================================================================
 # LOGGING
@@ -394,34 +428,6 @@ def _safe_aws_call(
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Executes an AWS SDK call and handles known-benign exceptions."""
-    benign_s3_errors = {
-        "NoSuchLifecycleConfiguration",
-        "NoSuchTagSet",
-        "NoSuchBucketPolicy",
-        "NoSuchPublicAccessBlockConfiguration",
-        "ServerSideEncryptionConfigurationNotFoundError",
-        "NoSuchBucketLogging",
-        "NoSuchWebsiteConfiguration",
-        "NoSuchCORSConfiguration",
-        "OwnershipControlsNotFoundError",
-        "ObjectLockConfigurationNotFoundError",
-        "NoSuchAccessPointPolicy",
-        "NoSuchStorageLensConfiguration",
-        "StorageLensConfigurationNotFound",
-        "NoSuchIntelligentTieringConfiguration",
-        "NoSuchBucketIntelligentTieringConfiguration",
-        "NoSuchMultiRegionAccessPointPolicy",
-        "NoSuchMultiRegionAccessPointRouteConfiguration",
-        "ReplicationConfigurationNotFoundError",
-        "NoSuchAccessPoint",
-        "NoSuchMetricsConfiguration",
-        "NoSuchBucketMetricsConfiguration",
-        "NoSuchAnalyticsConfiguration",
-        "NoSuchBucketAnalyticsConfiguration",
-        "NoSuchInventoryConfiguration",
-        "NoSuchBucketInventoryConfiguration",
-        "NoSuchNotificationConfiguration",
-    }
     try:
         return (
             retry_with_backoff(fn, account=account, **kwargs) if retry else fn(**kwargs)
@@ -431,7 +437,7 @@ def _safe_aws_call(
         if (
             isinstance(getattr(fn, "__self__", None), BaseClient)
             and getattr(fn, "__self__").meta.service_model.service_name == "s3"
-            and code in benign_s3_errors
+            and code in BENIGN_S3_ERRORS
         ):
             return default or {}
         log(

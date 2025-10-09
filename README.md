@@ -91,3 +91,5 @@ sudo ./ena-express-config.sh --revert
 - **`Dependencies/Requirements.txt`**: A text file containing the Python packages required by the `AWS-list-resources-all-*.py` scripts. These packages include `boto3` together with a matching `botocore` pin, `openpyxl`, `defusedxml`, `cron_descriptor`, `tzlocal`, and `tzdata`. Optional entries for handling S3 Inventory and Storage Lens manifests compressed with Zstandard, LZ4, Brotli, or Snappy are also provided (`zstandard`, `lz4`, `brotli`, and `python-snappy`).
 
 The inventory scripts track the continually updated AWS region catalogue, including the latest ISO and ISOB west/south partitions, so timezone conversions and pricing lookups stay accurate even as new regions launch.
+
+Every startup validation now emits a consistent `ERROR:` prefix, making it easier to spot missing dependencies or configuration issues before a scan begins.
