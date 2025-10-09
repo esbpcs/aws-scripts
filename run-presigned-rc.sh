@@ -73,6 +73,13 @@ else
 fi
 echo "$(date '+%Y-%m-%d %H:%M:%S') - Determined Python command: $PYTHON_CMD" >&2
 
+if ! $PYTHON_CMD -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Error: Python 3.9 or later is required to run the downloaded script." >&2
+    exit 1
+fi
+PYTHON_VERSION=$($PYTHON_CMD -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')
+echo "$(date '+%Y-%m-%d %H:%M:%S') - Python interpreter version: $PYTHON_VERSION" >&2
+
 # Function: install_pip
 # Attempts to install pip using ensurepip; if that fails, falls back to downloading get-pip.py.
 install_pip() {

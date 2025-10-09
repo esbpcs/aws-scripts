@@ -121,6 +121,13 @@ if [[ -z "$PYTHON_CMD" ]]; then
   exit 1
 fi
 
+if ! "$PYTHON_CMD" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'; then
+  log_error "Python 3.9 or later is required to run the downloaded inventory script."
+  exit 1
+fi
+PYTHON_VERSION=$("$PYTHON_CMD" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')
+log_info "Using Python interpreter $PYTHON_CMD (version $PYTHON_VERSION)"
+
 if [[ -n "$EXPECTED_OWNER" ]]; then
   OWNER_ARGS=(--expected-bucket-owner "$EXPECTED_OWNER")
 else

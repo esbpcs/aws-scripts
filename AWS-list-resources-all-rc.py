@@ -60,6 +60,10 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.worksheet.worksheet import Worksheet
 from tzlocal import get_localzone
 from xml.sax.saxutils import unescape
+if sys.version_info < (3, 9):  # pragma: no cover - environment guard
+    sys.stderr.write("This script requires Python 3.9 or later.\n")
+    sys.exit(1)
+
 from zoneinfo import ZoneInfo
 
 try:

@@ -23,6 +23,10 @@ This is the core tool of the repository, designed to scan and inventory resource
 - Understands modern S3 destinations (including access points, S3 Express, and Outposts) when reading Inventory and Storage Lens
   manifests, so exports stored behind ARNs continue to be processed without manual tweaks.
 
+**Requirements:**
+
+- Python 3.9 or later (the inventory scripts rely on the standard-library `zoneinfo` module).
+
 **Usage:**
 
 ```bash
