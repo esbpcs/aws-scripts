@@ -743,6 +743,76 @@ def fetch_instance_type_specs(
 # =================================================================================================
 
 
+def _iterate_operation_pages(
+    client: BaseClient,
+    operation: str,
+    alias: str,
+    **operation_kwargs: Any,
+) -> Iterable[Dict[str, Any]]:
+    """Yield result pages for an AWS operation, even when no paginator exists.
+
+    Some AWS APIs expose ``NextToken``/``Marker`` style pagination without
+    providing a boto3 paginator definition. The October 2025 guidance recommends
+    handling these operations explicitly to avoid runtime failures when relying
+    solely on ``client.can_paginate``. This helper first attempts to use the
+    official paginator and falls back to an automatic token loop when the
+    paginator is unavailable.
+    """
+
+    if client.can_paginate(operation):
+        paginator = require_paginator(client, operation)
+        yield from _safe_paginator(
+            paginator.paginate,
+            account=alias,
+            **operation_kwargs,
+        )
+        return
+
+    op = getattr(client, operation)
+    model = client.meta.service_model.operation_model(operation)
+
+    input_tokens: list[str] = []
+    if model.input_shape is not None:
+        for name in model.input_shape.members:
+            lower = name.lower()
+            if "token" in lower or "marker" in lower or "cursor" in lower:
+                input_tokens.append(name)
+    output_tokens: list[str] = []
+    if model.output_shape is not None:
+        for name in model.output_shape.members:
+            lower = name.lower()
+            if "token" in lower or "marker" in lower or "cursor" in lower:
+                output_tokens.append(name)
+
+    token_param = input_tokens[0] if input_tokens else None
+    token_value: Optional[str] = None
+
+    while True:
+        call_kwargs = dict(operation_kwargs)
+        if token_param and token_value:
+            call_kwargs[token_param] = token_value
+
+        page = _safe_aws_call(
+            op,
+            default={},
+            account=alias,
+            **call_kwargs,
+        )
+        if not page:
+            break
+        yield page
+
+        token_value = None
+        for candidate in output_tokens:
+            next_value = page.get(candidate)
+            if next_value:
+                token_value = str(next_value)
+                break
+
+        if not token_value:
+            break
+
+
 def get_aws_resource_details(
     client: BaseClient,
     paginator_name: str,
@@ -750,11 +820,12 @@ def get_aws_resource_details(
     alias: str,
     **paginator_kwargs,
 ) -> List[Dict[str, Any]]:
-    """A generic function to list AWS resources using a paginator."""
-    out = []
-    for page in _safe_paginator(
-        require_paginator(client, paginator_name).paginate,
-        account=alias,
+    """A generic function to list AWS resources with resilient pagination."""
+    out: List[Dict[str, Any]] = []
+    for page in _iterate_operation_pages(
+        client,
+        paginator_name,
+        alias,
         **paginator_kwargs,
     ):
         for item in page.get(list_key, []):
@@ -2173,6 +2244,8 @@ SAVINGS_PLAN_STATES = [
     "payment-pending",
     "payment-failed",
     "queued",
+    "queued-pending-payment",
+    "queued-pending-acceptance",
     "queued-deleted",
     "retired",
 ]
@@ -3190,16 +3263,15 @@ def get_eventbridge_details(
                 )
                 timezone_hint = rule_details.get("ScheduleExpressionTimezone") if rule_details else None
 
-            targets = [
-                t
-                for page in _safe_paginator(
-                    require_paginator(events_client, "list_targets_by_rule").paginate,
-                    account=alias,
-                    Rule=rule["Name"],
-                    EventBusName=bus_name,
-                )
-                for t in page.get("Targets", [])
-            ]
+            targets: List[Dict[str, Any]] = []
+            for page in _iterate_operation_pages(
+                events_client,
+                "list_targets_by_rule",
+                alias,
+                Rule=rule.get("Name", ""),
+                EventBusName=bus_name,
+            ):
+                targets.extend(page.get("Targets", []))
 
             target_arns: List[str] = []
             target_inputs: List[str] = []
@@ -3248,24 +3320,26 @@ def get_eventbridge_scheduler_details(
 ) -> List[Dict[str, Any]]:
     """Collects details for EventBridge Scheduler schedules."""
     out: List[Dict[str, Any]] = []
-    groups = {"default"} | {
-        g["Name"]
-        for page in _safe_paginator(
-            require_paginator(scheduler_client, "list_schedule_groups").paginate,
-            account=alias,
-        )
-        for g in page.get("ScheduleGroups", [])
-    }
+    groups: Set[str] = {"default"}
+    for page in _iterate_operation_pages(
+        scheduler_client,
+        "list_schedule_groups",
+        alias,
+    ):
+        for group in page.get("ScheduleGroups", []):
+            name = group.get("Name")
+            if name:
+                groups.add(str(name))
 
     for grp in groups:
-        for schedule_summary in get_aws_resource_details(
-            client=scheduler_client,
-            paginator_name="list_schedules",
-            list_key="Schedules",
-            alias=alias,
+        for page in _iterate_operation_pages(
+            scheduler_client,
+            "list_schedules",
+            alias,
             GroupName=grp,
         ):
-            schedule_name = schedule_summary.get("Name", "")
+            for schedule_summary in page.get("Schedules", []):
+                schedule_name = schedule_summary.get("Name", "")
 
             # Correctly call get_schedule to get full details including the target.
             details = _safe_aws_call(

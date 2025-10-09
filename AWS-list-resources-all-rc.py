@@ -180,6 +180,8 @@ SAVINGS_PLAN_STATES = [
     "payment-pending",
     "payment-failed",
     "queued",
+    "queued-pending-payment",
+    "queued-pending-acceptance",
     "queued-deleted",
     "retired",
 ]
@@ -556,6 +558,69 @@ def require_paginator(client: BaseClient, op: str) -> Paginator:
             f"{client.meta.service_model.service_name} cannot paginate '{op}'"
         )
     return client.get_paginator(op)
+
+
+def _iterate_operation_pages(
+    client: BaseClient,
+    operation: str,
+    alias: str,
+    **operation_kwargs: Any,
+) -> Iterable[Dict[str, Any]]:
+    """Yield pages for an AWS operation, even when boto3 lacks a paginator."""
+
+    if client.can_paginate(operation):
+        paginator = require_paginator(client, operation)
+        yield from _safe_paginator(
+            paginator.paginate,
+            account=alias,
+            **operation_kwargs,
+        )
+        return
+
+    op = getattr(client, operation)
+    model = client.meta.service_model.operation_model(operation)
+
+    input_tokens: list[str] = []
+    if model.input_shape is not None:
+        for name in model.input_shape.members:
+            lower = name.lower()
+            if "token" in lower or "marker" in lower or "cursor" in lower:
+                input_tokens.append(name)
+
+    output_tokens: list[str] = []
+    if model.output_shape is not None:
+        for name in model.output_shape.members:
+            lower = name.lower()
+            if "token" in lower or "marker" in lower or "cursor" in lower:
+                output_tokens.append(name)
+
+    token_param = input_tokens[0] if input_tokens else None
+    token_value: Optional[str] = None
+
+    while True:
+        call_kwargs = dict(operation_kwargs)
+        if token_param and token_value:
+            call_kwargs[token_param] = token_value
+
+        page = _safe_aws_call(
+            op,
+            default={},
+            account=alias,
+            **call_kwargs,
+        )
+        if not page:
+            break
+        yield page
+
+        token_value = None
+        for candidate in output_tokens:
+            next_value = page.get(candidate)
+            if next_value:
+                token_value = str(next_value)
+                break
+
+        if not token_value:
+            break
 
 
 def _collect_metric_aggregates(
@@ -3186,16 +3251,15 @@ def get_eventbridge_details(events: BaseClient, alias: str) -> List[Dict[str, An
                     tz_hint = rule_details.get("ScheduleExpressionTimezone") if rule_details else None
 
                 freq, det = humanise_schedule(expr, tz_hint or _tz_for(events.meta.region_name))
-                targ = [
-                    t
-                    for page in _safe_paginator(
-                        require_paginator(events, "list_targets_by_rule").paginate,
-                        account=alias,
-                        Rule=rule["Name"],
-                        EventBusName=name,
-                    )
-                    for t in page.get("Targets", [])
-                ]
+                targ: List[Dict[str, Any]] = []
+                for page in _iterate_operation_pages(
+                    events,
+                    "list_targets_by_rule",
+                    alias,
+                    Rule=rule.get("Name", ""),
+                    EventBusName=name,
+                ):
+                    targ.extend(page.get("Targets", []))
                 target_arns: List[str] = []
                 target_inputs: List[str] = []
                 for target in targ:
@@ -3239,17 +3303,22 @@ def get_eventbridge_scheduler_details(
     scheduler: BaseClient, alias: str
 ) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
-    groups = {"default"} | {
-        g["Name"]
-        for page in _safe_paginator(
-            scheduler.get_paginator("list_schedule_groups").paginate, account=alias
-        )
-        for g in page.get("ScheduleGroups", [])
-    }
+    groups: Set[str] = {"default"}
+    for page in _iterate_operation_pages(
+        scheduler,
+        "list_schedule_groups",
+        alias,
+    ):
+        for group in page.get("ScheduleGroups", []):
+            name = group.get("Name")
+            if name:
+                groups.add(str(name))
+
     for grp in groups:
-        for page in _safe_paginator(
-            scheduler.get_paginator("list_schedules").paginate,
-            account=alias,
+        for page in _iterate_operation_pages(
+            scheduler,
+            "list_schedules",
+            alias,
             GroupName=grp,
         ):
             for s in page.get("Schedules", []):
