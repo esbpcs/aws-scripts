@@ -40,28 +40,38 @@ from typing import (
     Union,
 )
 
-import boto3
-from botocore.client import BaseClient
-from botocore.config import Config
-from botocore.paginate import Paginator
-from botocore.exceptions import (
-    ClientError,
-    ConnectionClosedError,
-    ConnectTimeoutError,
-    EndpointConnectionError,
-    NoCredentialsError,
-    ReadTimeoutError,
-)
-from cron_descriptor import get_description as _cron_desc
-from defusedxml import ElementTree as ET
-from openpyxl import Workbook
-from openpyxl.utils.cell import get_column_letter
-from openpyxl.worksheet.table import Table, TableStyleInfo
-from openpyxl.worksheet.worksheet import Worksheet
-from tzlocal import get_localzone
 from xml.sax.saxutils import unescape
+
 if sys.version_info < (3, 9):  # pragma: no cover - environment guard
     sys.stderr.write("This script requires Python 3.9 or later.\n")
+    sys.exit(1)
+
+try:
+    import boto3
+    from botocore.client import BaseClient
+    from botocore.config import Config
+    from botocore.paginate import Paginator
+    from botocore.exceptions import (
+        ClientError,
+        ConnectionClosedError,
+        ConnectTimeoutError,
+        EndpointConnectionError,
+        NoCredentialsError,
+        ReadTimeoutError,
+    )
+    from cron_descriptor import get_description as _cron_desc
+    from defusedxml import ElementTree as ET
+    from openpyxl import Workbook
+    from openpyxl.utils.cell import get_column_letter
+    from openpyxl.worksheet.table import Table, TableStyleInfo
+    from openpyxl.worksheet.worksheet import Worksheet
+    from tzlocal import get_localzone
+except (ModuleNotFoundError, ImportError) as exc:  # pragma: no cover - dependency guard
+    missing = getattr(exc, "name", None) or str(exc)
+    sys.stderr.write(
+        f"Missing required dependency '{missing}'. Install the packages listed in "
+        "Dependencies/Requirements.txt and retry.\n"
+    )
     sys.exit(1)
 
 from zoneinfo import ZoneInfo
@@ -2252,8 +2262,16 @@ def inventory_metrics(
             if not cont:
                 break
 
-        if not cfgs:
+        enabled_cfgs = [cfg for cfg in cfgs if cfg.get("IsEnabled")]
+        if not enabled_cfgs:
+            log(
+                "debug",
+                "No enabled S3 inventory configuration found for this bucket; skipping metrics lookup.",
+                account=account_id,
+            )
             return None, None
+
+        cfgs = enabled_cfgs
 
         def _cfg_sort_key(cfg: Dict[str, Any]) -> Tuple[int, datetime]:
             timestamp_candidates = [

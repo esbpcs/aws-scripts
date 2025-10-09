@@ -45,28 +45,37 @@ from typing import (
 )
 from xml.sax.saxutils import unescape
 
-import boto3
-from botocore.client import BaseClient
-from botocore.paginate import Paginator
-from botocore.config import Config
-from botocore.exceptions import (
-    ClientError,
-    ConnectionClosedError,
-    ConnectTimeoutError,
-    EndpointConnectionError,
-    NoCredentialsError,
-    ReadTimeoutError,
-)
-from cron_descriptor import get_description as _cron_desc
-from defusedxml import ElementTree as ET
-from openpyxl import Workbook
-from openpyxl.styles import Alignment
-from openpyxl.utils.cell import get_column_letter
-from openpyxl.worksheet.table import Table, TableStyleInfo
-from openpyxl.worksheet.worksheet import Worksheet
-from tzlocal import get_localzone
 if sys.version_info < (3, 9):  # pragma: no cover - environment guard
     sys.stderr.write("This script requires Python 3.9 or later.\n")
+    sys.exit(1)
+
+try:
+    import boto3
+    from botocore.client import BaseClient
+    from botocore.paginate import Paginator
+    from botocore.config import Config
+    from botocore.exceptions import (
+        ClientError,
+        ConnectionClosedError,
+        ConnectTimeoutError,
+        EndpointConnectionError,
+        NoCredentialsError,
+        ReadTimeoutError,
+    )
+    from cron_descriptor import get_description as _cron_desc
+    from defusedxml import ElementTree as ET
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment
+    from openpyxl.utils.cell import get_column_letter
+    from openpyxl.worksheet.table import Table, TableStyleInfo
+    from openpyxl.worksheet.worksheet import Worksheet
+    from tzlocal import get_localzone
+except (ModuleNotFoundError, ImportError) as exc:  # pragma: no cover - dependency guard
+    missing = getattr(exc, "name", None) or str(exc)
+    sys.stderr.write(
+        f"Missing required dependency '{missing}'. Install the packages listed in "
+        "Dependencies/Requirements.txt and retry.\n"
+    )
     sys.exit(1)
 
 from zoneinfo import ZoneInfo
@@ -204,8 +213,11 @@ try:
     SERVICE_COLUMNS = config["SERVICE_COLUMNS"]
     UNIQUE_KEYS = config["UNIQUE_KEYS"]
     _REGION_SCOPED_SHEETS = set(config["REGION_SCOPED_SHEETS"])
-except (FileNotFoundError, KeyError) as e:
-    sys.exit(f"ERROR: Could not load configuration from config.json: {e}")
+except (FileNotFoundError, KeyError, json.JSONDecodeError) as exc:
+    sys.stderr.write(
+        f"ERROR: Unable to load configuration from config.json: {exc}\n"
+    )
+    sys.exit(1)
 
 # =================================================================================================
 # LOGGING
@@ -1632,8 +1644,16 @@ def inventory_metrics(
             if not continuation:
                 break
 
-        if not inv_configs:
+        enabled_configs = [cfg for cfg in inv_configs if cfg.get("IsEnabled")]
+        if not enabled_configs:
+            log(
+                "debug",
+                "No enabled S3 inventory configuration found for this bucket; skipping metrics lookup.",
+                account=alias,
+            )
             return None, None
+
+        inv_configs = enabled_configs
 
         def _cfg_sort_key(cfg: Dict[str, Any]) -> Tuple[int, datetime]:
             timestamp_candidates = [

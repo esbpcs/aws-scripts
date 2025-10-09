@@ -26,6 +26,7 @@ This is the core tool of the repository, designed to scan and inventory resource
 **Requirements:**
 
 - Python 3.9 or later (the inventory scripts rely on the standard-library `zoneinfo` module).
+- The Python packages listed in [`Dependencies/Requirements.txt`](Dependencies/Requirements.txt). You can install them with `pip install -r Dependencies/Requirements.txt`; the scripts now check for these dependencies at startup and exit with a clear message if anything is missing.
 
 **Usage:**
 
