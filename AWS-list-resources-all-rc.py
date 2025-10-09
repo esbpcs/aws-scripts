@@ -580,27 +580,91 @@ def _iterate_operation_pages(
     op = getattr(client, operation)
     model = client.meta.service_model.operation_model(operation)
 
-    input_tokens: list[str] = []
+    def _is_pagination_param(name: str) -> bool:
+        lower = name.lower()
+        if any(keyword in lower for keyword in ("token", "marker", "cursor", "position")):
+            return True
+        return "exclusive" in lower and "start" in lower
+
+    def _token_aliases(name: str) -> Set[str]:
+        lower = name.lower()
+        aliases: Set[str] = {lower}
+        stripped = lower
+        prefixes = ("next", "previous", "prev", "last", "starting", "start", "exclusive")
+        changed = True
+        while changed and stripped:
+            changed = False
+            for prefix in prefixes:
+                if stripped.startswith(prefix):
+                    stripped = stripped[len(prefix) :]
+                    changed = True
+        if stripped:
+            aliases.add(stripped)
+        return {alias for alias in aliases if alias}
+
+    input_alias_map: Dict[str, str] = {}
+    ordered_params: List[str] = []
     if model.input_shape is not None:
         for name in model.input_shape.members:
-            lower = name.lower()
-            if "token" in lower or "marker" in lower or "cursor" in lower:
-                input_tokens.append(name)
+            if not name:
+                continue
+            if not _is_pagination_param(name):
+                continue
+            ordered_params.append(name)
+            for alias_key in _token_aliases(name):
+                input_alias_map.setdefault(alias_key, name)
 
-    output_tokens: list[str] = []
+    output_tokens: List[Tuple[str, Set[str]]] = []
     if model.output_shape is not None:
         for name in model.output_shape.members:
-            lower = name.lower()
-            if "token" in lower or "marker" in lower or "cursor" in lower:
-                output_tokens.append(name)
+            if not name:
+                continue
+            if not _is_pagination_param(name) and "next" not in name.lower():
+                continue
+            output_tokens.append((name, _token_aliases(name)))
 
-    token_param = input_tokens[0] if input_tokens else None
-    token_value: Optional[str] = None
+    if not ordered_params:
+        for candidate, aliases in output_tokens:
+            if candidate == "NextToken" or "token" in candidate.lower():
+                ordered_params.append("NextToken")
+                input_alias_map.setdefault("nexttoken", "NextToken")
+                input_alias_map.setdefault("token", "NextToken")
+                break
+
+    token_state: Dict[str, Optional[str]] = {param: None for param in ordered_params}
+
+    def _extract_token_value(raw: Any) -> Optional[str]:
+        if raw in (None, ""):
+            return None
+        if isinstance(raw, dict):
+            for key in (
+                "NextToken",
+                "NextMarker",
+                "Marker",
+                "NextKeyMarker",
+                "NextUploadIdMarker",
+                "NextPageToken",
+                "PaginationToken",
+                "Cursor",
+                "NextCursor",
+                "Position",
+                "NextPosition",
+                "Value",
+                "Id",
+            ):
+                val = raw.get(key)
+                if val not in (None, ""):
+                    return str(val)
+            return None
+        if isinstance(raw, (list, tuple, set)):
+            return None
+        return str(raw)
 
     while True:
         call_kwargs = dict(operation_kwargs)
-        if token_param and token_value:
-            call_kwargs[token_param] = token_value
+        for param, value in token_state.items():
+            if value:
+                call_kwargs[param] = value
 
         page = _safe_aws_call(
             op,
@@ -612,15 +676,35 @@ def _iterate_operation_pages(
             break
         yield page
 
-        token_value = None
-        for candidate in output_tokens:
-            next_value = page.get(candidate)
-            if next_value:
-                token_value = str(next_value)
-                break
-
-        if not token_value:
+        if not token_state:
             break
+
+        next_tokens: Dict[str, Optional[str]] = {param: None for param in token_state}
+        for output_name, aliases in output_tokens:
+            raw_value = page.get(output_name)
+            value = _extract_token_value(raw_value)
+            if value is None:
+                continue
+
+            matched_param: Optional[str] = None
+            lower_name = output_name.lower()
+            if output_name in token_state:
+                matched_param = output_name
+            elif lower_name in input_alias_map:
+                matched_param = input_alias_map[lower_name]
+            else:
+                for alias_key in aliases:
+                    if alias_key in input_alias_map:
+                        matched_param = input_alias_map[alias_key]
+                        break
+
+            if matched_param and matched_param in next_tokens:
+                next_tokens[matched_param] = value
+
+        if not any(next_tokens.values()):
+            break
+
+        token_state.update(next_tokens)
 
 
 def _collect_metric_aggregates(
@@ -3235,28 +3319,39 @@ def get_eventbridge_details(events: BaseClient, alias: str) -> List[Dict[str, An
             EventBusName=name,
         ):
             for rule in page.get("Rules", []):
+                rule_name = (rule.get("Name") or "").strip()
+                if not rule_name:
+                    continue
+
                 expr = rule.get("ScheduleExpression", "")
                 if not expr:
                     continue
 
+                description = rule.get("Description", "")
                 tz_hint = rule.get("ScheduleExpressionTimezone")
-                if not tz_hint:
+                rule_details: Dict[str, Any] = {}
+                if not tz_hint or not description:
                     rule_details = _safe_aws_call(
                         events.describe_rule,
                         default={},
                         account=alias,
-                        Name=rule.get("Name", ""),
+                        Name=rule_name,
                         EventBusName=name,
                     )
-                    tz_hint = rule_details.get("ScheduleExpressionTimezone") if rule_details else None
+                    if rule_details:
+                        tz_hint = tz_hint or rule_details.get(
+                            "ScheduleExpressionTimezone"
+                        )
+                        description = description or rule_details.get("Description", "")
 
-                freq, det = humanise_schedule(expr, tz_hint or _tz_for(events.meta.region_name))
+                timezone_name = tz_hint or _tz_for(events.meta.region_name)
+                freq, det = humanise_schedule(expr, timezone_name)
                 targ: List[Dict[str, Any]] = []
                 for page in _iterate_operation_pages(
                     events,
                     "list_targets_by_rule",
                     alias,
-                    Rule=rule.get("Name", ""),
+                    Rule=rule_name,
                     EventBusName=name,
                 ):
                     targ.extend(page.get("Targets", []))
@@ -3279,16 +3374,19 @@ def get_eventbridge_details(events: BaseClient, alias: str) -> List[Dict[str, An
                             target_inputs.append(
                                 json.dumps(transformer, separators=(",", ":"))
                             )
-                timezone_name = tz_hint or _tz_for(events.meta.region_name)
                 out.append(
                     {
-                        "ScheduleName": rule["Name"],
+                        "ScheduleName": rule_name,
+                        "Arn": rule.get("Arn", ""),
                         "GroupName": name,
                         "State": rule.get("State", ""),
                         "Expression": expr,
                         "Timezone": timezone_name,
                         "Frequency": freq,
                         "Details": det,
+                        "Description": description,
+                        "ManagedBy": rule.get("ManagedBy", ""),
+                        "RoleArn": rule.get("RoleArn", ""),
                         "TargetCount": len(targ),
                         "TargetArn": "\n".join(target_arns),
                         "Input": "\n".join(target_inputs),
@@ -3322,7 +3420,10 @@ def get_eventbridge_scheduler_details(
             GroupName=grp,
         ):
             for s in page.get("Schedules", []):
-                name = s.get("Name", "")
+                name = (s.get("Name") or "").strip()
+                if not name:
+                    continue
+
                 det = _safe_aws_call(
                     scheduler.get_schedule,
                     default={},
@@ -3330,19 +3431,16 @@ def get_eventbridge_scheduler_details(
                     Name=name,
                     GroupName=grp,
                 )
+                if not det:
+                    continue
+
                 expr = det.get("ScheduleExpression", "")
-                freq, desc = humanise_schedule(
-                    expr,
-                    det.get(
-                        "ScheduleExpressionTimezone",
-                        REGION_TZ.get(scheduler.meta.region_name, "UTC"),
-                    ),
-                )
                 tz = det.get(
                     "ScheduleExpressionTimezone",
                     REGION_TZ.get(scheduler.meta.region_name, "UTC"),
                 )
-                tgt = det.get("Target", {})
+                freq, desc = humanise_schedule(expr, tz)
+                tgt = det.get("Target") or {}
                 flex = det.get("FlexibleTimeWindow") or {}
                 flex_mode = flex.get("Mode") or flex.get("mode")
                 flex_max = (
@@ -3374,12 +3472,14 @@ def get_eventbridge_scheduler_details(
                 out.append(
                     {
                         "ScheduleName": name,
+                        "ScheduleArn": det.get("Arn", ""),
                         "GroupName": grp,
                         "State": det.get("State", ""),
                         "Expression": expr,
                         "Timezone": tz,
                         "Frequency": freq,
                         "Details": desc,
+                        "Description": det.get("Description", ""),
                         "FlexibleWindowType": flex_mode or "OFF",
                         "FlexibleWindowMaximumDelay": flex_max,
                         "NextInvocationTime": to_local(
@@ -3387,6 +3487,7 @@ def get_eventbridge_scheduler_details(
                         ),
                         "TargetCount": 1 if tgt else 0,
                         "TargetArn": tgt.get("Arn", ""),
+                        "TargetRoleArn": tgt.get("RoleArn", ""),
                         "Input": target_input,
                         "Region": scheduler.meta.region_name,
                         "AccountAlias": alias,
