@@ -236,6 +236,46 @@ if [[ -n "$CONFIG_FILE" ]]; then
     log_info "Found specified config file '$CONFIG_FILE'. Downloading..."
     CONFIG_URL=$(aws s3 presign "s3://${BUCKET}/${CONFIG_KEY}" --region "$BUCKET_REGION" "${OWNER_ARGS[@]}" --expires-in "$EXPIRES")
     curl "${CURL_COMMON_ARGS[@]}" "$CONFIG_URL" -o "$PROJROOT/$CONFIG_FILE"
+    if [[ "$(head -n 1 "$PROJROOT/$CONFIG_FILE")" == *"<?xml"* ]]; then
+      log_error "Config download failed. Received an S3 error document instead of $CONFIG_FILE."
+      exit 1
+    fi
+
+    read -r CFG_SHA256 CFG_ETAG < <(
+      aws s3api head-object \
+        --bucket "$BUCKET" \
+        --key "$CONFIG_KEY" \
+        --region "$BUCKET_REGION" \
+        --checksum-mode ENABLED \
+        "${OWNER_ARGS[@]}" \
+        --query '[ChecksumSHA256,ETag]' \
+        --output text 2>/dev/null || echo "None None"
+    )
+
+    if [[ -n "$CFG_SHA256" && "$CFG_SHA256" != "None" ]]; then
+      LOCAL_SHA256=$($PYTHON_CMD - <<'PY' "$PROJROOT/$CONFIG_FILE"
+import base64, hashlib, sys
+with open(sys.argv[1], 'rb') as fh:
+    digest = hashlib.sha256(fh.read()).digest()
+print(base64.b64encode(digest).decode('ascii'))
+PY
+      )
+      if [[ "$LOCAL_SHA256" != "$CFG_SHA256" ]]; then
+        log_error "Checksum mismatch for $CONFIG_FILE (expected SHA256 $CFG_SHA256, got $LOCAL_SHA256)"
+        exit 1
+      fi
+      log_info "Verified SHA256 checksum for $CONFIG_FILE."
+    else
+      CFG_ETAG=${CFG_ETAG//"/}
+      if [[ "${#CFG_ETAG}" -eq 32 ]]; then
+        LOCAL_MD5=$(md5sum "$PROJROOT/$CONFIG_FILE" | awk '{print $1}')
+        if [[ "$LOCAL_MD5" != "$CFG_ETAG" ]]; then
+          log_error "MD5/ETag mismatch for $CONFIG_FILE (expected $CFG_ETAG, got $LOCAL_MD5)"
+          exit 1
+        fi
+        log_info "Verified config integrity using ETag."
+      fi
+    fi
   else
     log_info "Specified config file '$CONFIG_FILE' not found at '$CONFIG_KEY'."
   fi

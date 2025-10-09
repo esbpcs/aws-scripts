@@ -27,6 +27,7 @@ from collections import OrderedDict, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import bz2
 import gzip
+import lzma
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from itertools import islice
@@ -847,7 +848,7 @@ def bucket_region(
 def _decompress_manifest_bytes(
     payload: bytes, key: str, *, account: str = "-"
 ) -> Optional[bytes]:
-    """Decompresses manifest payloads supporting gzip, bz2, zstd, and lz4."""
+    """Decompress manifest payloads (gzip, bz2, zstd, lz4, xz)."""
 
     lower_key = key.lower()
     try:
@@ -873,6 +874,16 @@ def _decompress_manifest_bytes(
                 )
                 return None
             return lz4f.decompress(payload)
+        if lower_key.endswith((".xz", ".lzma")):
+            try:
+                return lzma.decompress(payload)
+            except (lzma.LZMAError, ValueError) as exc:
+                log(
+                    "warning",
+                    f"Failed to decompress xz manifest {key}: {exc}",
+                    account=account,
+                )
+                return None
     except Exception as exc:  # pragma: no cover - defensive logging
         log(
             "warning",
@@ -890,7 +901,13 @@ def _infer_inventory_file_format(
 
     lowered = key.lower()
     compression: Optional[str] = None
-    for suffix, comp in ((".zst", "ZSTD"), (".zstd", "ZSTD"), (".gz", "GZIP"), (".bz2", "BZIP2")):
+    for suffix, comp in (
+        (".zst", "ZSTD"),
+        (".zstd", "ZSTD"),
+        (".lz4", "LZ4"),
+        (".gz", "GZIP"),
+        (".bz2", "BZIP2"),
+    ):
         if lowered.endswith(suffix):
             compression = comp
             lowered = lowered[: -len(suffix)]
@@ -925,30 +942,87 @@ def _manifest_matches_context(
     account_id: str,
     bucket: Optional[str] = None,
     region: Optional[str] = None,
+    prefix: Optional[str] = None,
 ) -> bool:
-    """Ensure an inventory manifest belongs to the expected account/bucket/region."""
+    """Ensure an inventory manifest belongs to the expected account/bucket/region/prefix."""
 
-    account_candidates = _as_string_set(
-        manifest.get("sourceAccountIds") or manifest.get("sourceAccountId")
+    manifest_context = manifest.get("manifestContext")
+    if not isinstance(manifest_context, dict):
+        manifest_context = {}
+
+    account_candidates = (
+        _as_string_set(manifest.get("sourceAccountIds"))
+        | _as_string_set(manifest.get("sourceAccountId"))
+        | _as_string_set(manifest_context.get("sourceAccountIds"))
+        | _as_string_set(manifest_context.get("sourceAccountId"))
     )
     if account_candidates and str(account_id) not in account_candidates:
         return False
 
     if bucket:
-        bucket_candidates = _as_string_set(
-            manifest.get("sourceBuckets") or manifest.get("sourceBucket")
+        bucket_candidates = (
+            _as_string_set(manifest.get("sourceBuckets"))
+            | _as_string_set(manifest.get("sourceBucket"))
+            | _as_string_set(manifest_context.get("sourceBuckets"))
+            | _as_string_set(manifest_context.get("sourceBucket"))
         )
         if bucket_candidates and bucket not in bucket_candidates:
             return False
 
     if region:
-        region_candidates = _as_string_set(
-            manifest.get("sourceRegions") or manifest.get("sourceRegion")
+        region_candidates = (
+            _as_string_set(manifest.get("sourceRegions"))
+            | _as_string_set(manifest.get("sourceRegion"))
+            | _as_string_set(manifest_context.get("sourceRegions"))
+            | _as_string_set(manifest_context.get("sourceRegion"))
         )
         if region_candidates and region not in region_candidates:
             return False
 
+    if prefix:
+        normalized_prefix = prefix.rstrip("/")
+        prefix_candidates = {
+            candidate.rstrip("/")
+            for candidate in (
+                _as_string_set(manifest.get("sourcePrefixes"))
+                | _as_string_set(manifest.get("sourcePrefix"))
+                | _as_string_set(manifest_context.get("sourcePrefixes"))
+                | _as_string_set(manifest_context.get("sourcePrefix"))
+            )
+            if candidate
+        }
+        if prefix_candidates and normalized_prefix not in prefix_candidates:
+            return False
+
     return True
+
+
+def _parse_manifest_timestamp(value: Any) -> datetime:
+    """Best-effort conversion of manifest timestamps to aware datetimes."""
+
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        if candidate.endswith("Z"):
+            candidate = f"{candidate[:-1]}+00:00"
+        elif len(candidate) > 5 and candidate[-3] != ":" and candidate[-5] in {"+", "-"}:
+            candidate = f"{candidate[:-2]}:{candidate[-2:]}"
+        try:
+            return datetime.fromisoformat(candidate)
+        except ValueError:
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    return datetime.min.replace(tzinfo=timezone.utc)
 
 
 def _split_s3_arn(arn: str) -> Optional[Tuple[str, str]]:
@@ -1208,7 +1282,7 @@ def inventory_metrics(
                 continue
             dest_bucket = dest_bucket_arn.split(":::")[-1]
             dest_account_id = str(dest_info.get("AccountId") or account_id)
-            prefix = dest_info.get("Prefix", "")
+            dest_prefix = dest_info.get("Prefix", "")
             inventory_format = (dest_info.get("Format", "CSV") or "CSV").upper()
             inventory_compression = (dest_info.get("Compression") or "GZIP").upper()
             if inventory_format not in {"CSV", "PARQUET", "ORC"}:
@@ -1218,6 +1292,12 @@ def inventory_metrics(
                     account=alias,
                 )
                 continue
+
+            filter_cfg = config.get("Filter", {})
+            source_prefix = ""
+            if isinstance(filter_cfg, dict):
+                source_prefix = str(filter_cfg.get("Prefix") or "")
+
             key_format = dest_info.get("KeyFormat", {})
             key_format_type = ""
             if isinstance(key_format, dict):
@@ -1227,20 +1307,23 @@ def inventory_metrics(
 
             if "PARTITION" in key_format_type:
                 components: List[str] = []
-                if prefix:
-                    components.append(prefix.rstrip("/"))
+                if dest_prefix:
+                    components.append(dest_prefix.rstrip("/"))
                 if account_id:
                     components.append(f"source-account={account_id}")
                 if region_hint:
                     components.append(f"source-region={region_hint}")
+                if source_prefix:
+                    components.append(f"source-prefix={source_prefix.rstrip('/')}")
                 components.append(f"source-bucket={bucket}")
                 inventory_prefix = "/".join(components)
                 if inventory_prefix:
                     inventory_prefix = f"{inventory_prefix.rstrip('/')}/"
             else:
                 inventory_prefix = (
-                    f"{prefix.rstrip('/')}/{bucket}/" if prefix else f"{bucket}/"
+                    f"{dest_prefix.rstrip('/')}/{bucket}/" if dest_prefix else f"{bucket}/"
                 )
+
             dest_region = bucket_region(
                 dest_bucket, region_hint, session, expected_owner=dest_account_id
             )
@@ -1248,7 +1331,7 @@ def inventory_metrics(
                 continue
             s3_dest_client = aws_client("s3", dest_region, session)
             paginator = require_paginator(s3_dest_client, "list_objects_v2")
-            manifests = []
+            manifests: List[Dict[str, Any]] = []
             for page in _safe_paginator(
                 paginator.paginate,
                 account=alias,
@@ -1257,180 +1340,208 @@ def inventory_metrics(
                 ExpectedBucketOwner=dest_account_id,
             ):
                 manifests.extend(page.get("Contents", []))
-        manifest_suffixes = (
-            "manifest.json",
-            "manifest.json.gz",
-            "manifest.json.zst",
-            "manifest.json.zstd",
-            "manifest.json.bz2",
-        )
-        manifest_objects = [
-            obj
-            for obj in manifests
-            if any(obj.get("Key", "").endswith(sfx) for sfx in manifest_suffixes)
-        ]
-        manifest_candidates = sorted(
-            manifest_objects,
-            key=lambda x: x.get("LastModified", datetime.min.replace(tzinfo=timezone.utc)),
-            reverse=True,
-        )
 
-        for manifest_obj in manifest_candidates:
-            manifest_resp = _safe_aws_call(
-                s3_dest_client.get_object,
-                default={},
-                account=alias,
-                Bucket=dest_bucket,
-                Key=manifest_obj.get("Key", ""),
-                ExpectedBucketOwner=dest_account_id,
+            manifest_suffixes = (
+                "manifest.json",
+                "manifest.json.gz",
+                "manifest.json.zst",
+                "manifest.json.zstd",
+                "manifest.json.bz2",
+                "manifest.json.lz4",
+                "manifest.json.xz",
             )
-            if not manifest_resp:
-                continue
-            body = manifest_resp.get("Body")
-            if body is None:
-                continue
-            try:
-                manifest_bytes = body.read()
-            finally:
-                try:
-                    body.close()
-                except Exception:
-                    pass
-            manifest_bytes = _decompress_manifest_bytes(
-                manifest_bytes, manifest_obj.get("Key", ""), account=alias
-            )
-            if manifest_bytes is None:
-                continue
-            try:
-                manifest_data = json.loads(manifest_bytes.decode("utf-8-sig"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                log(
-                    "debug",
-                    f"Inventory manifest {manifest_obj.get('Key', '')} could not be parsed: {exc}",
-                    account=alias,
-                )
-                continue
+            manifest_objects = [
+                obj
+                for obj in manifests
+                if any(obj.get("Key", "").endswith(sfx) for sfx in manifest_suffixes)
+            ]
 
-            if not _manifest_matches_context(
-                manifest_data,
-                account_id=account_id,
-                bucket=bucket,
-                region=region_hint,
-            ):
-                log(
-                    "debug",
-                    (
-                        "Skipping inventory manifest that does not match "
-                        f"account {account_id}, bucket {bucket}, or region {region_hint}"
-                    ),
+            parsed_manifests: List[Tuple[Tuple[int, datetime], Dict[str, Any]]] = []
+            for manifest_obj in manifest_objects:
+                manifest_resp = _safe_aws_call(
+                    s3_dest_client.get_object,
+                    default={},
                     account=alias,
+                    Bucket=dest_bucket,
+                    Key=manifest_obj.get("Key", ""),
+                    ExpectedBucketOwner=dest_account_id,
                 )
-                continue
-
-            candidate_files: List[Tuple[str, Optional[str], Optional[str]]] = []
-            for entry in manifest_data.get("files", []):
-                key = entry.get("key")
-                if not key:
+                if not manifest_resp:
                     continue
-                fmt_hint = entry.get("format")
-                if isinstance(fmt_hint, str):
-                    fmt_hint = fmt_hint.upper() or None
-                else:
-                    fmt_hint = None
-                comp_hint = entry.get("compression")
-                if isinstance(comp_hint, str):
-                    comp_hint = comp_hint.upper() or None
-                else:
-                    comp_hint = None
-                candidate_files.append((key, fmt_hint, comp_hint))
+                body = manifest_resp.get("Body")
+                if body is None:
+                    continue
+                try:
+                    manifest_bytes = body.read()
+                finally:
+                    try:
+                        body.close()
+                    except Exception:
+                        pass
+                manifest_bytes = _decompress_manifest_bytes(
+                    manifest_bytes, manifest_obj.get("Key", ""), account=alias
+                )
+                if manifest_bytes is None:
+                    continue
+                try:
+                    manifest_data = json.loads(manifest_bytes.decode("utf-8-sig"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    log(
+                        "debug",
+                        f"Inventory manifest {manifest_obj.get('Key', '')} could not be parsed: {exc}",
+                        account=alias,
+                    )
+                    continue
 
-            if not candidate_files:
-                for location in manifest_data.get("fileLocations", []):
-                    object_arn = location.get("objectArn")
-                    arn_parts = _split_s3_arn(object_arn) if object_arn else None
-                    if arn_parts:
-                        bucket_part, key_part = arn_parts
-                        if bucket_part and bucket_part != dest_bucket:
-                            continue
-                        if key_part:
-                            candidate_files.append((key_part, None, None))
-                    for uri in location.get("URIPrefixes", []):
-                        if uri.startswith("s3://"):
-                            bucket_part, _, key_part = uri[5:].partition("/")
+                if not _manifest_matches_context(
+                    manifest_data,
+                    account_id=account_id,
+                    bucket=bucket,
+                    region=region_hint,
+                    prefix=source_prefix or None,
+                ):
+                    log(
+                        "debug",
+                        (
+                            "Skipping inventory manifest that does not match "
+                            f"account {account_id}, bucket {bucket}, region {region_hint}, "
+                            f"or prefix {source_prefix}"
+                        ),
+                        account=alias,
+                    )
+                    continue
+
+                timestamp_candidates = [
+                    manifest_data.get("manifestCreationTimestamp"),
+                    manifest_data.get("creationTimestamp"),
+                    manifest_data.get("reportCreationTime"),
+                    (manifest_data.get("reportContext") or {}).get("reportCreationTime"),
+                    manifest_obj.get("LastModified"),
+                ]
+                creation_ts = max(
+                    (
+                        _parse_manifest_timestamp(value)
+                        for value in timestamp_candidates
+                        if value is not None
+                    ),
+                    default=datetime.min.replace(tzinfo=timezone.utc),
+                )
+                is_latest = 1 if manifest_data.get("isLatest", True) else 0
+                parsed_manifests.append(((is_latest, creation_ts), manifest_data))
+
+            if not parsed_manifests:
+                continue
+
+            parsed_manifests.sort(key=lambda item: item[0], reverse=True)
+
+            for _, manifest_data in parsed_manifests:
+                candidate_files: List[Tuple[str, Optional[str], Optional[str]]] = []
+                for entry in manifest_data.get("files", []):
+                    key = entry.get("key")
+                    if not key:
+                        continue
+                    fmt_hint = entry.get("format")
+                    if isinstance(fmt_hint, str):
+                        fmt_hint = fmt_hint.upper() or None
+                    else:
+                        fmt_hint = None
+                    comp_hint = entry.get("compression")
+                    if isinstance(comp_hint, str):
+                        comp_hint = comp_hint.upper() or None
+                    else:
+                        comp_hint = None
+                    candidate_files.append((key, fmt_hint, comp_hint))
+
+                if not candidate_files:
+                    for location in manifest_data.get("fileLocations", []):
+                        object_arn = location.get("objectArn")
+                        arn_parts = _split_s3_arn(object_arn) if object_arn else None
+                        if arn_parts:
+                            bucket_part, key_part = arn_parts
                             if bucket_part and bucket_part != dest_bucket:
                                 continue
-                            prefix_hint = key_part
-                        else:
-                            prefix_hint = uri
-                        prefix_hint = prefix_hint.lstrip("/")
-                        for page in _safe_paginator(
-                            paginator.paginate,
-                            account=alias,
-                            Bucket=dest_bucket,
-                            Prefix=prefix_hint,
-                            ExpectedBucketOwner=dest_account_id,
-                        ):
-                            for obj in page.get("Contents", []):
-                                candidate_files.append((obj.get("Key", ""), None, None))
+                            if key_part:
+                                candidate_files.append((key_part, None, None))
+                        for uri in location.get("URIPrefixes", []):
+                            if uri.startswith("s3://"):
+                                bucket_part, _, key_part = uri[5:].partition("/")
+                                if bucket_part and bucket_part != dest_bucket:
+                                    continue
+                                prefix_hint = key_part
+                            else:
+                                prefix_hint = uri
+                            prefix_hint = prefix_hint.lstrip("/")
+                            for page in _safe_paginator(
+                                paginator.paginate,
+                                account=alias,
+                                Bucket=dest_bucket,
+                                Prefix=prefix_hint,
+                                ExpectedBucketOwner=dest_account_id,
+                            ):
+                                for obj in page.get("Contents", []):
+                                    candidate_files.append((obj.get("Key", ""), None, None))
 
-            if not candidate_files:
-                continue
-
-            normalized: Dict[str, Tuple[str, Optional[str]]] = {}
-            seen_keys: set[str] = set()
-            for key, fmt_hint, comp_hint in candidate_files:
-                if not key or key in seen_keys:
+                if not candidate_files:
                     continue
-                fmt_candidate = (fmt_hint or inventory_format or "CSV").upper()
-                comp_candidate = comp_hint or inventory_compression
-                inferred = _infer_inventory_file_format(key)
-                if inferred:
-                    inferred_fmt, inferred_comp = inferred
-                    fmt_candidate = inferred_fmt
-                    if inferred_fmt == "CSV":
-                        comp_candidate = inferred_comp or "NONE"
-                    else:
-                        comp_candidate = inferred_comp
-                if fmt_candidate not in {"CSV", "PARQUET", "ORC"}:
-                    fmt_candidate = inventory_format
-                if fmt_candidate in {"PARQUET", "ORC"}:
-                    comp_candidate = None
-                normalized[key] = (fmt_candidate or inventory_format, comp_candidate)
-                seen_keys.add(key)
 
-            total_bytes, total_objects = 0, 0
-            worker_count = min(len(normalized) or 1, 10)
-            with ThreadPoolExecutor(max_workers=max(worker_count, 1)) as executor:
-                futures = [
-                    executor.submit(
-                        _s3_select_sum_and_count,
-                        s3_dest_client,
-                        dest_bucket,
-                        key,
-                        account=alias,
-                        compression=comp or inventory_compression,
-                        file_format=fmt,
-                        expected_owner=dest_account_id,
-                    )
-                    for key, (fmt, comp) in normalized.items()
-                ]
-                for future in as_completed(futures):
-                    try:
-                        byte_chunk, obj_chunk = future.result()
-                    except Exception as exc:
-                        log(
-                            "debug",
-                            f"S3 Select failed for inventory fragment in {bucket}: {exc}",
-                            account=alias,
-                        )
+                normalized: Dict[str, Tuple[str, Optional[str]]] = {}
+                seen_keys: set[str] = set()
+                for key, fmt_hint, comp_hint in candidate_files:
+                    if not key or key in seen_keys:
                         continue
-                    total_bytes += byte_chunk
-                    total_objects += obj_chunk
+                    fmt_candidate = (fmt_hint or inventory_format or "CSV").upper()
+                    comp_candidate = comp_hint or inventory_compression
+                    inferred = _infer_inventory_file_format(key)
+                    if inferred:
+                        inferred_fmt, inferred_comp = inferred
+                        fmt_candidate = inferred_fmt
+                        if inferred_fmt == "CSV":
+                            comp_candidate = inferred_comp or "NONE"
+                        else:
+                            comp_candidate = inferred_comp
+                    if fmt_candidate not in {"CSV", "PARQUET", "ORC"}:
+                        fmt_candidate = inventory_format
+                    if fmt_candidate in {"PARQUET", "ORC"}:
+                        comp_candidate = None
+                    normalized[key] = (fmt_candidate or inventory_format, comp_candidate)
+                    seen_keys.add(key)
 
-            metrics = (total_bytes, total_objects)
-            break
+                total_bytes, total_objects = 0, 0
+                worker_count = min(len(normalized) or 1, 10)
+                with ThreadPoolExecutor(max_workers=max(worker_count, 1)) as executor:
+                    futures = [
+                        executor.submit(
+                            _s3_select_sum_and_count,
+                            s3_dest_client,
+                            dest_bucket,
+                            key,
+                            account=alias,
+                            compression=comp or inventory_compression,
+                            file_format=fmt,
+                            expected_owner=dest_account_id,
+                        )
+                        for key, (fmt, comp) in normalized.items()
+                    ]
+                    for future in as_completed(futures):
+                        try:
+                            byte_chunk, obj_chunk = future.result()
+                        except Exception as exc:
+                            log(
+                                "debug",
+                                f"S3 Select failed for inventory fragment in {bucket}: {exc}",
+                                account=alias,
+                            )
+                            continue
+                        total_bytes += byte_chunk
+                        total_objects += obj_chunk
 
-        if metrics:
+                metrics = (total_bytes, total_objects)
+                break
+
+            if metrics is not None:
+                break
+
+        if metrics is not None:
             return metrics
     except Exception as e:
         log("debug", f"S3 Inventory metrics for {bucket} failed: {e}")
@@ -1501,6 +1612,8 @@ def storage_lens_metrics(
             "manifest.json.zst",
             "manifest.json.zstd",
             "manifest.json.bz2",
+            "manifest.json.lz4",
+            "manifest.json.xz",
         )
 
         for selected_config_id, export_config in export_candidates:
@@ -1548,17 +1661,17 @@ def storage_lens_metrics(
             ):
                 manifests.extend(page.get("Contents", []))
 
-            manifest_candidates = sorted(
-                (
-                    m
-                    for m in manifests
-                    if any(m.get("Key", "").endswith(sfx) for sfx in manifest_suffixes)
-                ),
-                key=lambda x: x.get("LastModified", datetime.min.replace(tzinfo=timezone.utc)),
-                reverse=True,
-            )
+            manifest_objects = [
+                m
+                for m in manifests
+                if any(m.get("Key", "").endswith(sfx) for sfx in manifest_suffixes)
+            ]
 
-            for manifest_obj in manifest_candidates:
+            parsed_manifests: List[
+                Tuple[Tuple[int, datetime], Dict[str, Any], Dict[str, Any]]
+            ] = []
+
+            for manifest_obj in manifest_objects:
                 manifest_resp = _safe_aws_call(
                     s3_dest_client.get_object,
                     default={},
@@ -1608,6 +1721,30 @@ def storage_lens_metrics(
                     )
                     continue
 
+                timestamp_candidates = [
+                    manifest_data.get("reportCreationTime"),
+                    manifest_data.get("creationTimestamp"),
+                    manifest_data.get("manifestCreationTimestamp"),
+                    (manifest_data.get("reportContext") or {}).get("reportCreationTime"),
+                    manifest_obj.get("LastModified"),
+                ]
+                creation_ts = max(
+                    (
+                        _parse_manifest_timestamp(value)
+                        for value in timestamp_candidates
+                        if value is not None
+                    ),
+                    default=datetime.min.replace(tzinfo=timezone.utc),
+                )
+                is_latest = 1 if manifest_data.get("isLatest", True) else 0
+                parsed_manifests.append(((is_latest, creation_ts), manifest_data, manifest_obj))
+
+            if not parsed_manifests:
+                continue
+
+            parsed_manifests.sort(key=lambda item: item[0], reverse=True)
+
+            for _, manifest_data, manifest_obj in parsed_manifests:
                 candidate_files: List[
                     Tuple[str, Optional[datetime], Optional[str], Optional[str]]
                 ] = []
