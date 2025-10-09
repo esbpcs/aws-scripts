@@ -93,8 +93,14 @@ if [[ -z "$BUCKET_REGION" || "$BUCKET_REGION" == "None" ]]; then
 fi
 echo "$(date '+%Y-%m-%d %H:%M:%S') - Bucket $BUCKET_NAME is in region: $BUCKET_REGION" >&2
 
+echo "$(date '+%Y-%m-%d %H:%M:%S') - Verifying access to s3://$BUCKET_NAME/$SCRIPT_NAME" >&2
+if ! aws s3api head-object --bucket "$BUCKET_NAME" --key "$SCRIPT_NAME" --region "$BUCKET_REGION" "${OWNER_ARGS[@]}" >/dev/null 2>&1; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Error: Unable to access s3://$BUCKET_NAME/$SCRIPT_NAME with the provided credentials." >&2
+    exit 1
+fi
+
 echo "$(date '+%Y-%m-%d %H:%M:%S') - Generating pre-signed URL for s3://$BUCKET_NAME/$SCRIPT_NAME in region $BUCKET_REGION" >&2
-PRESIGNED_URL=$(aws s3 presign "s3://$BUCKET_NAME/$SCRIPT_NAME" --expires-in "$PRESIGN_TTL" --region "$BUCKET_REGION" "${OWNER_ARGS[@]}")
+PRESIGNED_URL=$(aws s3 presign "s3://$BUCKET_NAME/$SCRIPT_NAME" --expires-in "$PRESIGN_TTL" --region "$BUCKET_REGION")
 if [ -z "$PRESIGNED_URL" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') - Error: Failed to generate a pre-signed URL." >&2
     exit 1
@@ -191,7 +197,7 @@ if [ "$ext" == "py" ]; then
     # If a requirements file is found, download and install dependencies.
     if [ -n "$REQ_FOUND" ]; then
         REQ_TEMP=$(mktemp /tmp/requirements.$(date +%Y%m%d%H%M%S).XXXXXX.txt)
-        PRESIGNED_REQ=$(aws s3 presign "s3://$BUCKET_NAME/$REQ_FOUND" --expires-in "$PRESIGN_TTL" --region "$BUCKET_REGION" "${OWNER_ARGS[@]}")
+        PRESIGNED_REQ=$(aws s3 presign "s3://$BUCKET_NAME/$REQ_FOUND" --expires-in "$PRESIGN_TTL" --region "$BUCKET_REGION")
         if [ -n "$PRESIGNED_REQ" ]; then
             if curl "${CURL_COMMON_ARGS[@]}" "$PRESIGNED_REQ" -o "$REQ_TEMP"; then
                 # Compute MD5 hash of the requirements file.

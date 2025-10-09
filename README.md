@@ -46,6 +46,8 @@ These wrapper scripts are designed to securely download and execute scripts (lik
 - **`run-presigned-canary.sh`**: A robust script that can download and run Python, Bash, or PowerShell scripts from S3. It automatically handles Python virtual environments, dependency installation from `requirements.txt` files, and entrypoint detection for projects stored in folders or archives.
 - **`run-presigned-rc.sh`**: A simpler version of the script runner, focused on fetching a Python script and its associated `Requirements.txt` file from an S3 bucket.
 
+Both runners verify object ownership with `--expected-owner`/`EXPECTED_OWNER` before generating a pre-signed URL. This keeps the workflow compatible with the AWS CLI (which does not accept `--expected-bucket-owner` on `aws s3 presign`) while still preventing cross-account spoofing when you supply the expected AWS Account ID.
+
 **Usage (`run-presigned-canary.sh`):**
 
 ```bash

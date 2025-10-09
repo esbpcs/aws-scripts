@@ -145,11 +145,10 @@ fi
 log_info "Bucket region detected: $BUCKET_REGION"
 
 # --- S3 Object Download and Extraction ---
-log_info "Generating presigned URL for s3://${BUCKET}/${SCRIPT_KEY}"
-PRESIGNED_URL=$(aws s3 presign "s3://${BUCKET}/${SCRIPT_KEY}" --region "$BUCKET_REGION" "${OWNER_ARGS[@]}" --expires-in "$EXPIRES")
-
+log_info "Checking whether s3://${BUCKET}/${SCRIPT_KEY} is a single object"
 if aws s3api head-object --bucket "$BUCKET" --key "$SCRIPT_KEY" --region "$BUCKET_REGION" "${OWNER_ARGS[@]}" &>/dev/null; then
-  log_info "Detected S3 key as a single object."
+  log_info "Detected S3 key as a single object. Generating presigned URL."
+  PRESIGNED_URL=$(aws s3 presign "s3://${BUCKET}/${SCRIPT_KEY}" --region "$BUCKET_REGION" --expires-in "$EXPIRES")
   TARGET="$SCRATCH_DIR/$(basename "$SCRIPT_KEY")"
 
   if ! curl "${CURL_COMMON_ARGS[@]}" "$PRESIGNED_URL" -o "$TARGET"; then
@@ -236,7 +235,7 @@ if [[ -n "$CONFIG_FILE" ]]; then
   log_info "Searching for config file dependency at s3://${BUCKET}/${CONFIG_KEY}"
   if aws s3api head-object --bucket "$BUCKET" --key "$CONFIG_KEY" --region "$BUCKET_REGION" "${OWNER_ARGS[@]}" &>/dev/null; then
     log_info "Found specified config file '$CONFIG_FILE'. Downloading..."
-    CONFIG_URL=$(aws s3 presign "s3://${BUCKET}/${CONFIG_KEY}" --region "$BUCKET_REGION" "${OWNER_ARGS[@]}" --expires-in "$EXPIRES")
+    CONFIG_URL=$(aws s3 presign "s3://${BUCKET}/${CONFIG_KEY}" --region "$BUCKET_REGION" --expires-in "$EXPIRES")
     curl "${CURL_COMMON_ARGS[@]}" "$CONFIG_URL" -o "$PROJROOT/$CONFIG_FILE"
     if [[ "$(head -n 1 "$PROJROOT/$CONFIG_FILE")" == *"<?xml"* ]]; then
       log_error "Config download failed. Received an S3 error document instead of $CONFIG_FILE."
@@ -453,7 +452,8 @@ esac
 # --- Artifact Handling ---
 log_info "Searching for report files (*.xlsx, *.html, *.csv, *.zip) in temporary directory..."
 find "$SCRATCH_DIR" -type f \( -iname "*.xlsx" -o -iname "*.html" -o -iname "*.csv" -o -iname "*.zip" \) -print0 | while IFS= read -r -d $'\0' file; do
-  log_info "Found report: $(basename "$file"). Copying to $ORIGINAL_PWD"
+  report_name=$(basename "$file")
+  log_info "Found report: ${report_name}. Copying to ${ORIGINAL_PWD}"
   mv "$file" "$ORIGINAL_PWD/"
 done
 
